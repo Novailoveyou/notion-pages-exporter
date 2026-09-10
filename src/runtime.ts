@@ -589,6 +589,7 @@ export const RUNTIME_JS = `(() => {
     tabs.forEach((t, j) => styleTab(t, j === index));
     filterItems(root, "");
     enhanceMedia(body);
+    wireToggles(body);
     wireCardActions(root);
   }
 
@@ -645,52 +646,59 @@ export const RUNTIME_JS = `(() => {
     for (const block of $$(".notion-toggle-block", scope || document)) {
       if (block.dataset.nspToggleWired) continue;
       block.dataset.nspToggleWired = "1";
-      // Structure varies; find header row + content siblings
       const header =
-        block.querySelector(":scope > div > div[role='button']") ||
         block.querySelector(":scope [role='button']") ||
+        block.querySelector(":scope > div > div[role='button']") ||
         block.querySelector(":scope > div");
       if (!header) continue;
 
-      // Mark content nodes (everything after the first row)
-      const rows = Array.from(block.children);
-      let contentNodes = [];
-      if (rows.length >= 2) {
-        contentNodes = rows.slice(1);
-      } else {
+      const contentNodes = () => {
+        const marked = $$("[data-nsp-toggle-content]", block);
+        if (marked.length) return marked;
+        const rows = Array.from(block.children);
+        if (rows.length >= 2) return rows.slice(1);
         const inner = block.querySelector(":scope > div");
         if (inner) {
           const kids = Array.from(inner.children);
-          if (kids.length >= 2) contentNodes = kids.slice(1);
+          if (kids.length >= 2) return kids.slice(1);
         }
-      }
-      // If Notion left content in a details-like wrapper
-      const details = block.querySelector("[data-nsp-toggle-content]") ||
-        block.querySelector(".notion-toggle-block > div:last-child");
+        return [];
+      };
 
       const setOpen = (open) => {
         block.setAttribute("data-nsp-open", open ? "1" : "0");
-        for (const n of contentNodes) {
-          if (n === header || header.contains(n)) continue;
-          n.style.display = open ? "" : "none";
+        const btn = block.querySelector('[role="button"]');
+        if (btn) {
+          btn.setAttribute("aria-expanded", open ? "true" : "false");
+          btn.setAttribute("aria-label", open ? "Close" : "Open");
+          const svg = btn.querySelector("svg");
+          if (svg) {
+            svg.style.transform = open ? "rotateZ(0deg)" : "rotateZ(-90deg)";
+          }
         }
-        if (details && !contentNodes.includes(details) && details !== header) {
-          details.style.display = open ? "" : "none";
+        for (const n of contentNodes()) {
+          if (n === header || (header && header.contains(n))) continue;
+          n.style.display = open ? "" : "none";
         }
       };
 
-      // Start collapsed if marked during freeze
       const startOpen = block.getAttribute("data-nsp-open") === "1";
       setOpen(startOpen);
 
-      header.style.cursor = "pointer";
-      header.addEventListener("click", (e) => {
-        // Don't hijack links inside toggle title
+      const onToggle = (e) => {
         if (e.target.closest("a")) return;
         e.preventDefault();
         e.stopPropagation();
         setOpen(block.getAttribute("data-nsp-open") !== "1");
-      });
+      };
+      header.style.cursor = "pointer";
+      header.addEventListener("click", onToggle);
+      // Title text is often outside the chevron button — make the whole row clickable
+      const title = block.querySelector("[data-content-editable-leaf]");
+      if (title && title !== header && !header.contains(title)) {
+        title.style.cursor = "pointer";
+        title.addEventListener("click", onToggle);
+      }
     }
   }
 
@@ -804,16 +812,7 @@ export const RUNTIME_JS = `(() => {
       }
       img.style.pointerEvents = "auto";
       img.style.cursor = "pointer";
-      if (img.dataset.nspLb) continue;
-      if (/^data:image\\/(gif|svg)/i.test(img.getAttribute("src") || "")) continue;
-      // Skip tiny decorative / gallery-card covers (those navigate via the card link)
-      if (img.closest(".notion-collection-item a")) continue;
-      img.dataset.nspLb = "1";
-      img.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openLightbox(img);
-      });
+      repairMediaSrc(img);
     }
     for (const audio of $$("audio", root)) {
       repairMediaSrc(audio);
@@ -1048,91 +1047,285 @@ export const RUNTIME_JS = `(() => {
     });
   }
 
+  function collectLightboxImages(fromImg) {
+    const scope =
+      (fromImg.closest("[data-nsp-peek-body]") ||
+        fromImg.closest(".nsp-peek-content") ||
+        fromImg.closest(".notion-page-content") ||
+        document);
+    const list = $$(
+      ".notion-image-block img, [role='figure'] img",
+      scope,
+    ).filter((img) => {
+      if (img.closest(".notion-collection-item a, .notion-gallery-view .notion-collection-item")) {
+        return false;
+      }
+      const src = img.currentSrc || img.getAttribute("src") || "";
+      return src && !/^data:image\\/(gif|svg)/i.test(src);
+    });
+    // Dedupe by src
+    const seen = new Set();
+    const out = [];
+    for (const img of list) {
+      const key = img.currentSrc || img.src;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(img);
+    }
+    return out.length ? out : [fromImg];
+  }
+
   function openLightbox(img) {
     const existing = document.querySelector("[data-nsp-lightbox]");
     if (existing) existing.remove();
+
+    const gallery = collectLightboxImages(img);
+    let index = Math.max(0, gallery.indexOf(img));
+    if (index < 0) index = 0;
+
     const overlay = document.createElement("div");
     overlay.setAttribute("data-nsp-lightbox", "1");
     Object.assign(overlay.style, {
       position: "fixed",
       inset: "0",
-      background: "rgba(0,0,0,.72)",
-      zIndex: "20000",
+      background: "rgba(0,0,0,.82)",
+      zIndex: "50000",
       display: "flex",
+      flexDirection: "column",
       alignItems: "center",
       justifyContent: "center",
-      padding: "24px",
+      padding: "16px",
       cursor: "zoom-out",
+      boxSizing: "border-box",
     });
+
+    const toolbar = document.createElement("div");
+    Object.assign(toolbar.style, {
+      position: "absolute",
+      top: "12px",
+      right: "12px",
+      left: "12px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "flex-end",
+      gap: "8px",
+      zIndex: "2",
+      cursor: "default",
+    });
+
+    const counter = document.createElement("div");
+    Object.assign(counter.style, {
+      marginRight: "auto",
+      color: "rgba(255,255,255,.75)",
+      fontSize: "13px",
+      fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    });
+
+    const mkBtn = (label, html, onClick) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("aria-label", label);
+      b.title = label;
+      b.innerHTML = html;
+      Object.assign(b.style, {
+        appearance: "none",
+        border: "none",
+        background: "rgba(255,255,255,.14)",
+        color: "#fff",
+        borderRadius: "8px",
+        padding: "8px 10px",
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "6px",
+        fontSize: "13px",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+      });
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick(e);
+      });
+      return b;
+    };
+
+    const EXPAND_SVG =
+      '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M4.5 3.375A1.125 1.125 0 0 0 3.375 4.5V8a.625.625 0 1 0 1.25 0V5.508l4.067 4.067a.625.625 0 0 0 .884-.884L5.508 4.625H8a.625.625 0 1 0 0-1.25zM15.5 16.625a1.125 1.125 0 0 0 1.125-1.125V12a.625.625 0 1 0-1.25 0v2.492l-4.067-4.067a.625.625 0 1 0-.884.884l4.067 4.066H12a.625.625 0 1 0 0 1.25z"/></svg>';
+    const COMPRESS_SVG =
+      '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M8.125 3.375a.625.625 0 0 1 .625.625V8c0 .69-.56 1.25-1.25 1.25H3.999a.625.625 0 1 1 0-1.25h2.492L2.424 4.183a.625.625 0 1 1 .884-.884L7.375 7.242V5a.625.625 0 0 1 .75-.625zM11.875 16.625a.625.625 0 0 1-.625-.625V12c0-.69.56-1.25 1.25-1.25h3.501a.625.625 0 1 1 0 1.25h-2.492l4.067 4.067a.625.625 0 1 1-.884.884L12.625 12.758V15a.625.625 0 0 1-.75.625z"/></svg>';
+    const EXT_SVG =
+      '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.75 2a.75.75 0 0 1 0 1.5H3.5v9h9V9.25a.75.75 0 0 1 1.5 0v4A.75.75 0 0 1 13.25 14h-10A.75.75 0 0 1 2.5 13.25v-10A.75.75 0 0 1 3.25 2zm3.72.22a.75.75 0 0 1 .78-.17l.08.04.08.05.06.06.04.05L14.53 5.4a.75.75 0 0 1-1.06 1.06L12.5 5.49V10a.75.75 0 0 1-1.5 0V3.75a.75.75 0 0 1 .75-.75h.01z"/></svg>';
+
     const panel = document.createElement("div");
     Object.assign(panel.style, {
       position: "relative",
-      maxWidth: "min(1100px, 96vw)",
-      maxHeight: "92vh",
+      maxWidth: "min(1200px, 96vw)",
+      maxHeight: "88vh",
       cursor: "default",
-    });
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.innerHTML = CLOSE_SVG;
-    closeBtn.setAttribute("aria-label", "Close");
-    Object.assign(closeBtn.style, {
-      position: "absolute",
-      top: "-36px",
-      right: "0",
-      appearance: "none",
-      border: "none",
-      background: "rgba(255,255,255,.12)",
-      color: "#fff",
-      borderRadius: "8px",
-      padding: "6px",
-      cursor: "pointer",
       display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: "12px",
     });
+
     const big = document.createElement("img");
-    big.src = img.currentSrc || img.src;
-    big.alt = img.alt || "";
     Object.assign(big.style, {
       display: "block",
-      maxWidth: "100%",
-      maxHeight: "85vh",
+      maxWidth: "96vw",
+      maxHeight: "78vh",
+      width: "auto",
+      height: "auto",
       objectFit: "contain",
-      borderRadius: "4px",
+      borderRadius: "6px",
+      boxShadow: "0 12px 48px rgba(0,0,0,.45)",
+      background: "rgba(255,255,255,.04)",
     });
+
+    const nav = document.createElement("div");
+    Object.assign(nav.style, {
+      display: "flex",
+      gap: "8px",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "default",
+    });
+
     const actions = document.createElement("div");
     Object.assign(actions.style, {
       display: "flex",
       gap: "8px",
-      marginTop: "10px",
-      justifyContent: "flex-end",
+      justifyContent: "center",
+      flexWrap: "wrap",
+      cursor: "default",
     });
-    const openFull = document.createElement("a");
-    openFull.href = img.currentSrc || img.src;
-    openFull.target = "_blank";
-    openFull.rel = "noopener noreferrer";
-    openFull.textContent = "Open in full page";
-    Object.assign(openFull.style, {
+
+    const openFullLink = document.createElement("a");
+    openFullLink.target = "_blank";
+    openFullLink.rel = "noopener noreferrer";
+    openFullLink.innerHTML = EXT_SVG + "<span>Open full size</span>";
+    Object.assign(openFullLink.style, {
       color: "#fff",
       fontSize: "13px",
       textDecoration: "none",
-      padding: "6px 10px",
-      borderRadius: "6px",
-      background: "rgba(255,255,255,.12)",
+      padding: "8px 12px",
+      borderRadius: "8px",
+      background: "rgba(255,255,255,.14)",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "6px",
+      fontFamily: "ui-sans-serif, system-ui, sans-serif",
     });
-    actions.appendChild(openFull);
-    panel.appendChild(closeBtn);
-    panel.appendChild(big);
-    panel.appendChild(actions);
-    overlay.appendChild(panel);
-    const close = () => overlay.remove();
-    closeBtn.addEventListener("click", (e) => { e.stopPropagation(); close(); });
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    document.addEventListener("keydown", function onKey(e) {
-      if (e.key === "Escape") {
-        close();
-        document.removeEventListener("keydown", onKey);
+    openFullLink.addEventListener("click", (e) => e.stopPropagation());
+
+    let fsBtn;
+    const syncFsBtn = () => {
+      const on = !!document.fullscreenElement;
+      fsBtn.innerHTML = (on ? COMPRESS_SVG : EXPAND_SVG) +
+        "<span>" + (on ? "Exit fullscreen" : "Fullscreen") + "</span>";
+      fsBtn.setAttribute("aria-label", on ? "Exit fullscreen" : "Fullscreen");
+      fsBtn.title = on ? "Exit fullscreen" : "Fullscreen";
+    };
+
+    const show = (i) => {
+      index = (i + gallery.length) % gallery.length;
+      const srcImg = gallery[index];
+      const src = srcImg.currentSrc || srcImg.src;
+      big.src = src;
+      big.alt = srcImg.alt || "";
+      openFullLink.href = src;
+      counter.textContent = gallery.length > 1
+        ? (index + 1) + " / " + gallery.length
+        : "";
+      prevBtn.style.visibility = gallery.length > 1 ? "visible" : "hidden";
+      nextBtn.style.visibility = gallery.length > 1 ? "visible" : "hidden";
+    };
+
+    const prevBtn = mkBtn("Previous", "‹", () => show(index - 1));
+    const nextBtn = mkBtn("Next", "›", () => show(index + 1));
+    Object.assign(prevBtn.style, { fontSize: "22px", padding: "4px 14px" });
+    Object.assign(nextBtn.style, { fontSize: "22px", padding: "4px 14px" });
+
+    fsBtn = mkBtn("Fullscreen", EXPAND_SVG + "<span>Fullscreen</span>", async () => {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else {
+          await overlay.requestFullscreen();
+        }
+      } catch (_) {
+        // Fallback: expand panel visually if Fullscreen API blocked
+        const expanded = overlay.getAttribute("data-nsp-fs") === "1";
+        overlay.setAttribute("data-nsp-fs", expanded ? "0" : "1");
+        if (!expanded) {
+          panel.style.maxWidth = "100%";
+          panel.style.maxHeight = "100%";
+          big.style.maxWidth = "100vw";
+          big.style.maxHeight = "92vh";
+        } else {
+          panel.style.maxWidth = "min(1200px, 96vw)";
+          panel.style.maxHeight = "88vh";
+          big.style.maxWidth = "96vw";
+          big.style.maxHeight = "78vh";
+        }
+        syncFsBtn();
       }
     });
+
+    const closeBtn = mkBtn("Close", CLOSE_SVG, () => close());
+
+    const close = async () => {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+      } catch (_) {}
+      overlay.remove();
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("fullscreenchange", syncFsBtn);
+    };
+
+    function onKey(e) {
+      if (!overlay.isConnected) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => close());
+        } else {
+          close();
+        }
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        show(index - 1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        show(index + 1);
+      }
+    }
+
+    toolbar.appendChild(counter);
+    toolbar.appendChild(fsBtn);
+    toolbar.appendChild(openFullLink);
+    toolbar.appendChild(closeBtn);
+    nav.appendChild(prevBtn);
+    nav.appendChild(nextBtn);
+    actions.appendChild(nav);
+    panel.appendChild(big);
+    panel.appendChild(actions);
+    overlay.appendChild(toolbar);
+    overlay.appendChild(panel);
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) close();
+    });
+    big.addEventListener("click", (e) => e.stopPropagation());
+    panel.addEventListener("click", (e) => e.stopPropagation());
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("fullscreenchange", syncFsBtn);
+
     document.body.appendChild(overlay);
+    show(index);
+    syncFsBtn();
   }
 
   function padCollectionToolbars() {
@@ -1152,8 +1345,52 @@ export const RUNTIME_JS = `(() => {
     wireCollectionSort(root);
     const id = root.getAttribute("data-block-id") ||
       root.querySelector("[data-block-id]")?.getAttribute("data-block-id");
-    const cap = captures.find((c) => c.blockId === id);
+    let cap = (captures || []).find((c) => c.blockId === id);
+    // Fallback: single capture on the page, or match by nested id
+    if (!cap && captures && captures.length === 1) cap = captures[0];
+    if (!cap && id && captures) {
+      cap = captures.find((c) =>
+        root.querySelector('[data-block-id="' + c.blockId + '"]'),
+      );
+    }
     wireViewTabs(root, cap);
+  }
+
+  function wireLightbox() {
+    if (document.documentElement.dataset.nspLightbox) return;
+    document.documentElement.dataset.nspLightbox = "1";
+    document.addEventListener("click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest("[data-nsp-lightbox]")) return;
+      // Hit the img, or the image block / figure wrapper around it
+      let img = t.closest("img");
+      if (!img) {
+        const host = t.closest(
+          ".notion-image-block, [role='figure']",
+        );
+        if (host) img = host.querySelector("img");
+      }
+      if (!img) return;
+      // Skip collection card covers (those navigate)
+      if (img.closest(".notion-collection-item a, .notion-gallery-view .notion-collection-item")) {
+        return;
+      }
+      // Only content images (page body or peek), not chrome/icons
+      if (
+        !img.closest(
+          ".notion-image-block, .notion-page-content, [data-nsp-peek-body], .nsp-peek-content, [role='figure']",
+        )
+      ) {
+        return;
+      }
+      const src = img.currentSrc || img.getAttribute("src") || "";
+      if (!src || /^data:image\\/(gif|svg)/i.test(src)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openLightbox(img);
+    }, true);
   }
 
   function injectStyles() {
@@ -1169,16 +1406,27 @@ export const RUNTIME_JS = `(() => {
       .notion-image-block img,
       .notion-page-content .notion-image-block img,
       [data-nsp-peek-body] .notion-image-block img,
-      [data-nsp-peek-body] img:not([src^="data:"]) {
+      [data-nsp-peek-body] img:not([src^="data:"]),
+      .nsp-peek-content .notion-image-block img,
+      .nsp-peek-content img:not([src^="data:"]) {
         max-width: 100% !important;
         cursor: pointer !important;
         pointer-events: auto !important;
       }
-      .notion-image-block img {
+      .notion-image-block img,
+      [data-nsp-peek-body] .notion-image-block img,
+      .nsp-peek-content .notion-image-block img {
         width: 100% !important;
         height: auto !important;
         max-height: none !important;
         object-fit: contain !important;
+      }
+      [data-nsp-peek-body] .notion-page-content,
+      .nsp-peek-content .notion-page-content,
+      [data-nsp-peek-body] [role="figure"],
+      .nsp-peek-content [role="figure"] {
+        max-width: 100% !important;
+        overflow-x: hidden;
       }
       .notion-collection-item img,
       .notion-gallery-view img {
@@ -1213,7 +1461,8 @@ export const RUNTIME_JS = `(() => {
       }
       .notion-collection-view-tab[data-nsp-active="1"],
       .notion-collection-view-tab[aria-selected="true"],
-      .notion-collection-view-tab-button[data-nsp-active="1"] {
+      .notion-collection-view-tab-button[data-nsp-active="1"],
+      .notion-collection-view-tab-button [aria-selected="true"] {
         background: var(--ca-graBacSecTra, rgba(255,255,255,.1)) !important;
       }
       /* Notion print CSS often hides chrome — keep breadcrumbs visible */
@@ -1239,10 +1488,14 @@ export const RUNTIME_JS = `(() => {
         background: var(--c-bacPri, #191919);
       }
       .notion-collection-view-tab-button {
-        cursor: pointer;
+        cursor: pointer !important;
+        pointer-events: auto !important;
       }
       .notion-toggle-block [role="button"],
       .notion-toggle-block { cursor: pointer; }
+      .notion-toggle-block [data-nsp-toggle-content] {
+        margin-top: 2px;
+      }
       .notion-floating-table-of-contents { pointer-events: auto !important; }
 
       /* Mobile: stack Notion column layouts */
@@ -1467,6 +1720,7 @@ export const RUNTIME_JS = `(() => {
   let peekFull = false;
   let peekHistoryPushed = false;
   let peekIgnorePop = false;
+  let peekLoadGen = 0;
 
   function ensurePeekRoot() {
     if (peekRoot && peekRoot.isConnected) return peekRoot;
@@ -1610,14 +1864,20 @@ export const RUNTIME_JS = `(() => {
     }
     right.appendChild(iconBtn("Close", SVG.close, closePeek));
 
+    const gen = ++peekLoadGen;
     body.innerHTML = '<div style="padding:24px;opacity:.6">Loading…</div>';
     root.setAttribute("data-open", "1");
     root.setAttribute("data-peek-bar", "1");
-    setTimeout(() => root.setAttribute("data-peek-bar", "0"), 1800);
+    setTimeout(() => {
+      if (gen === peekLoadGen) root.setAttribute("data-peek-bar", "0");
+    }, 1800);
 
     try {
       const res = await fetch(href);
+      if (gen !== peekLoadGen) return;
+      if (!res.ok) throw new Error("HTTP " + res.status);
       const html = await res.text();
+      if (gen !== peekLoadGen) return;
       const doc = new DOMParser().parseFromString(html, "text/html");
       let captures = [];
       try {
@@ -1634,6 +1894,7 @@ export const RUNTIME_JS = `(() => {
         doc.querySelector(".notion-page-content") ||
         doc.body;
 
+      if (gen !== peekLoadGen) return;
       body.innerHTML = "";
       const wrap = document.createElement("div");
       wrap.className = "nsp-peek-content";
@@ -1652,7 +1913,9 @@ export const RUNTIME_JS = `(() => {
       // Re-wire interactive bits inside peek
       wireToggles(body);
       enhanceMedia(body);
-      loadAssetMap().then(() => enhanceMedia(body));
+      loadAssetMap().then(() => {
+        if (gen === peekLoadGen) enhanceMedia(body);
+      });
       wireCardActions(body);
       wireCollectionsIn(body, captures);
       padCollectionToolbars();
@@ -1662,6 +1925,8 @@ export const RUNTIME_JS = `(() => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         const a = e.target.closest("a[href]");
         if (!a || a.closest("[data-nsp-card-actions]")) return;
+        // Let collection view tabs handle their own clicks
+        if (a.closest(".notion-collection-view-tab-button")) return;
         const h = a.getAttribute("href") || "";
         if (!isLocalHtmlHref(h)) return;
         e.preventDefault();
@@ -1678,6 +1943,7 @@ export const RUNTIME_JS = `(() => {
         }
       };
     } catch (err) {
+      if (gen !== peekLoadGen) return;
       body.innerHTML =
         '<div style="padding:24px">Could not load page. <a href="' +
         href +
@@ -1770,6 +2036,7 @@ export const RUNTIME_JS = `(() => {
     layoutTopbar();
     wireToggles(document);
     wireToc();
+    wireLightbox();
     enhanceMedia(document);
     // Re-run media repair after cache map loads
     loadAssetMap().then(() => enhanceMedia(document));
@@ -1778,7 +2045,10 @@ export const RUNTIME_JS = `(() => {
     wireCardActions(document);
     window.addEventListener("resize", syncViewport);
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closePeek();
+      if (e.key === "Escape") {
+        if (document.querySelector("[data-nsp-lightbox]")) return;
+        closePeek();
+      }
     });
 
     let captures = [];

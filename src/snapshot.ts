@@ -98,16 +98,30 @@ export async function captureCollectionViews(
       ),
     ) as HTMLElement[];
 
-    const seen = new Set<string>();
+    // Prefer the instance that actually hosts the tablist — Notion duplicates
+    // the same data-block-id on nested shells that have no tabs.
+    const byId = new Map<string, HTMLElement[]>();
     for (const block of blocks) {
       const blockId = block.getAttribute("data-block-id") || "";
-      if (!blockId || seen.has(blockId)) continue;
-      seen.add(blockId);
+      if (!blockId) continue;
+      const list = byId.get(blockId) || [];
+      list.push(block);
+      byId.set(blockId, list);
+    }
 
-      const root =
-        (block.closest(
-          ".notion-selectable.notion-collection_view-block, .notion-selectable.notion-collection_view_page-block",
-        ) as HTMLElement) || block;
+    for (const [blockId, instances] of byId) {
+      let root: HTMLElement | null = null;
+      for (const block of instances) {
+        const candidate =
+          (block.closest(
+            ".notion-selectable.notion-collection_view-block, .notion-selectable.notion-collection_view_page-block",
+          ) as HTMLElement) || block;
+        if (candidate.querySelector('[role="tablist"]')) {
+          root = candidate;
+          break;
+        }
+      }
+      if (!root) continue;
       const tablist = root.querySelector('[role="tablist"]');
       if (!tablist) continue;
 
@@ -138,7 +152,18 @@ export async function captureCollectionViews(
       const captured: { label: string; html: string }[] = [];
       for (const tab of tabs) {
         const label =
-          (tab.textContent || "").replace(/\s+/g, " ").trim() || "View";
+          (tab.getAttribute("aria-label") || "")
+            .replace(/\s+/g, " ")
+            .trim() ||
+          (tab.textContent || "").replace(/\s+/g, " ").trim() ||
+          "View";
+        // Prefer real pointer activation — Notion sometimes ignores .click()
+        tab.dispatchEvent(
+          new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+        );
+        tab.dispatchEvent(
+          new PointerEvent("pointerup", { bubbles: true, cancelable: true }),
+        );
         tab.click();
         // Dismiss view-settings popover if the click opened one
         const esc = new KeyboardEvent("keydown", {
@@ -146,7 +171,7 @@ export async function captureCollectionViews(
           bubbles: true,
         });
         document.dispatchEvent(esc);
-        const wait = /calendar|table|board|timeline/i.test(label) ? 1800 : 900;
+        const wait = /calendar|table|board|timeline/i.test(label) ? 2200 : 1100;
         await delay(wait);
 
         const expectSel = /calendar/i.test(label)
@@ -201,6 +226,75 @@ export async function captureCollectionViews(
     }
     return out;
   });
+}
+
+/**
+ * Notion lazy-loads toggle children only after a real UI expand.
+ * Synthetic evaluate-clicks often leave aria-expanded=false with empty bodies
+ * (e.g. STUDENT A / STUDENT B). Use CDP clicks and wait for content.
+ */
+export async function expandAllToggles(page: Page): Promise<number> {
+  let opened = 0;
+  for (let pass = 0; pass < 12; pass++) {
+    const before = await page.evaluate(
+      () => document.querySelectorAll(".notion-toggle-block").length,
+    );
+
+    const closed = await page.$$(
+      '.notion-toggle-block [role="button"][aria-expanded="false"]',
+    );
+    if (!closed.length) break;
+
+    let passOpened = 0;
+    for (const btn of closed) {
+      try {
+        await btn.evaluate((el) => {
+          try {
+            (el as HTMLElement).scrollIntoView({
+              block: "center",
+              inline: "nearest",
+            });
+          } catch {
+            /* ignore */
+          }
+        });
+        await btn.click({ delay: 20 });
+        passOpened += 1;
+        opened += 1;
+        // Wait until this control reports open, or give up quickly
+        await page
+          .waitForFunction(
+            (el) => el.getAttribute("aria-expanded") === "true",
+            { timeout: 2500 },
+            btn,
+          )
+          .catch(() => null);
+        await new Promise((r) => setTimeout(r, 350));
+      } catch {
+        /* overlay / detached — continue */
+      }
+    }
+
+    try {
+      await page.waitForNetworkIdle({ idleTime: 400, timeout: 4_000 });
+    } catch {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const after = await page.evaluate(
+      () => document.querySelectorAll(".notion-toggle-block").length,
+    );
+    // No new nested toggles and nothing opened this pass → done
+    if (passOpened === 0 && after <= before) break;
+  }
+
+  // Final settle so nested media requests can start
+  try {
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: 5_000 });
+  } catch {
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return opened;
 }
 
 /**
@@ -281,16 +375,17 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       return key ? (el as unknown as Record<string, unknown>)[key] : null;
     };
 
-    // Expand toggles first so nested media exists
+    // Toggles should already be expanded via expandAllToggles(); keep a light
+    // in-page pass for any that CDP missed.
     for (const block of Array.from(
       document.querySelectorAll(".notion-toggle-block"),
     )) {
-      const btn =
-        block.querySelector("[role='button']") ||
-        block.querySelector(":scope > div");
-      if (btn) (btn as HTMLElement).click();
+      const btn = block.querySelector(
+        '[role="button"][aria-expanded="false"]',
+      ) as HTMLElement | null;
+      if (btn) btn.click();
     }
-    await delay(500);
+    await delay(400);
 
     const mediaBlocks = Array.from(
       document.querySelectorAll(
@@ -439,18 +534,16 @@ export async function freezeNotionPage(page: Page): Promise<string> {
   await page.evaluate(async () => {
     const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-    // Expand toggles so nested content (images, etc.) is present in the DOM
+    // Best-effort expand for any toggles still closed (primary expand is CDP)
     for (const block of Array.from(
       document.querySelectorAll(".notion-toggle-block"),
     )) {
-      const btn =
-        block.querySelector("[role='button']") ||
-        block.querySelector(":scope > div");
-      if (btn) {
-        (btn as HTMLElement).click();
-      }
+      const btn = block.querySelector(
+        '[role="button"][aria-expanded="false"]',
+      ) as HTMLElement | null;
+      if (btn) btn.click();
     }
-    await delay(400);
+    await delay(600);
 
     for (const img of Array.from(document.querySelectorAll("img"))) {
       const el = img as HTMLImageElement;
@@ -499,22 +592,46 @@ export async function freezeNotionPage(page: Page): Promise<string> {
       }
     }
 
-    // Collapse toggles for default closed state; content stays in DOM
+    // Collapse toggles for default closed UI, but keep children in the DOM.
+    // Mark content nodes so the offline runtime can show/hide reliably.
     for (const block of Array.from(
       document.querySelectorAll(".notion-toggle-block"),
     )) {
-      (block as HTMLElement).setAttribute("data-nsp-open", "0");
-      const kids = Array.from(block.children);
-      for (let i = 1; i < kids.length; i++) {
-        (kids[i] as HTMLElement).style.display = "none";
+      const el = block as HTMLElement;
+      el.setAttribute("data-nsp-open", "0");
+      const btn = el.querySelector('[role="button"]') as HTMLElement | null;
+      if (btn) {
+        btn.setAttribute("aria-expanded", "false");
+        btn.setAttribute("aria-label", "Open");
       }
-      // Also hide deep content rows Notion nests under first child
-      const first = block.querySelector(":scope > div");
-      if (first && kids.length === 1) {
-        const inner = Array.from(first.children);
-        for (let i = 1; i < inner.length; i++) {
-          (inner[i] as HTMLElement).style.display = "none";
+
+      const contentNodes: HTMLElement[] = [];
+      const kids = Array.from(el.children) as HTMLElement[];
+      // Notion usually: [headerRow, ...contentBlocks]
+      if (kids.length >= 2) {
+        for (let i = 1; i < kids.length; i++) contentNodes.push(kids[i]!);
+      }
+      // Or a single wrapper whose children after the first are content
+      if (!contentNodes.length && kids[0]) {
+        const inner = Array.from(kids[0].children) as HTMLElement[];
+        for (let i = 1; i < inner.length; i++) contentNodes.push(inner[i]!);
+      }
+      // Nested blocks that are siblings of the header flex row
+      if (!contentNodes.length) {
+        for (const child of Array.from(
+          el.querySelectorAll(":scope > div > .notion-selectable, :scope > .notion-selectable"),
+        ) as HTMLElement[]) {
+          if (child.querySelector('[role="button"][aria-label]')) continue;
+          if (child.closest(".notion-list-item-box-left")) continue;
+          // Skip the header chrome that contains the title leaf
+          if (child.querySelector("[data-content-editable-leaf]")) continue;
+          contentNodes.push(child);
         }
+      }
+
+      for (const node of contentNodes) {
+        node.setAttribute("data-nsp-toggle-content", "1");
+        node.style.display = "none";
       }
     }
 

@@ -38,6 +38,7 @@ import { injectRuntime, RUNTIME_JS } from "./runtime.ts";
 import { writePwaAssets } from "./pwa.ts";
 import {
   captureCollectionViews,
+  expandAllToggles,
   freezeNotionPage,
   hydrateNotionMedia,
 } from "./snapshot.ts";
@@ -546,9 +547,18 @@ async function scrapeOnePage(
   setPhase("content", `${label} · deep`);
   await waitForNotionContent(page, { deep: true });
 
+  // Expand toggles (STUDENT A/B etc.) with real clicks so nested content loads
+  setPhase("toggles", label);
+  updateSpinner(label, "toggles");
+  await expandAllToggles(page).catch(() => 0);
+
   setPhase("views", label);
   updateSpinner(label, "views");
   const collectionViews = await captureCollectionViews(page).catch(() => []);
+
+  // Nested toggles can appear after the first pass / view switches
+  setPhase("toggles", `${label} · nested`);
+  await expandAllToggles(page).catch(() => 0);
 
   // Force-load lazy image/audio while the response collector is still attached
   setPhase("assets", `${label} · media`);
