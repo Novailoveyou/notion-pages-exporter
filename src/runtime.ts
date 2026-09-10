@@ -907,7 +907,7 @@ export const RUNTIME_JS = `(() => {
   }
 
   function ensureBlockAssetIndex() {
-    if (blockAssetIndex) return blockAssetIndex;
+    if (blockAssetIndex && assetMap) return blockAssetIndex;
     blockAssetIndex = new Map();
     if (!assetMap) return blockAssetIndex;
     for (const [remote, rel] of Object.entries(assetMap)) {
@@ -1447,6 +1447,22 @@ export const RUNTIME_JS = `(() => {
       .notion-audio-block [role="figure"] {
         min-height: 40px;
         pointer-events: auto !important;
+      }
+      /* Bookmark cards: keep cover column compact (gif placeholders used to balloon) */
+      .notion-bookmark-block a {
+        max-width: 100%;
+      }
+      .notion-bookmark-block img {
+        max-width: 100% !important;
+        max-height: 154px !important;
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+      }
+      .notion-bookmark-block a > div:first-child {
+        max-height: 154px;
+        max-width: 280px;
+        flex: 1 1 120px !important;
       }
       .notion-table-view, .notion-scroller.horizontal {
         overflow-x: auto !important;

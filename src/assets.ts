@@ -670,8 +670,8 @@ export function buildBlockAssetIndex(
 }
 
 /**
- * Inject <audio> into empty Notion audio blocks and replace gif placeholders
- * using assets keyed by ?id=<blockId> in the CDN URL.
+ * Inject <audio>/<img> into empty Notion media shells and replace gif
+ * placeholders using assets keyed by ?id=<blockId> in the CDN URL.
  */
 export function injectBlockMedia(
   html: string,
@@ -690,6 +690,34 @@ export function injectBlockMedia(
     return rel;
   };
 
+  const fillFigureOrAppend = (
+    mid: string,
+    close: string,
+    mediaHtml: string,
+  ): string => {
+    // Full empty figure inside mid: <div role="figure"…></div>
+    if (
+      /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i.test(mid)
+    ) {
+      return (
+        mid.replace(
+          /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i,
+          `$1${mediaHtml}$3`,
+        ) + close
+      );
+    }
+    // Figure opener in mid; its </div> is the first of the trailing close group
+    if (/<div\b[^>]*role="figure"[^>]*>/i.test(mid) && !/<img\b|<audio\b/i.test(mid)) {
+      return (
+        mid.replace(
+          /(<div\b[^>]*role="figure"[^>]*>)/i,
+          `$1${mediaHtml}`,
+        ) + close
+      );
+    }
+    return mid + mediaHtml + close;
+  };
+
   // Audio / image: fill empty Notion figure shells from ?id=<blockId> assets
   html = html.replace(
     /(<div\b[^>]*data-block-id="([^"]+)"[^>]*notion-(audio|image)-block[^>]*>)([\s\S]*?)(<\/div>\s*<\/div>\s*<\/div>)/gi,
@@ -705,54 +733,175 @@ export function injectBlockMedia(
       if (!entry) return full;
       const isAudio = kind.toLowerCase() === "audio";
       if (isAudio) {
-        if (/<audio\b/i.test(mid) || !entry.audio) return full;
+        if (/<audio\b/i.test(mid + close) || !entry.audio) return full;
         const src = relTo(entry.audio);
         const player =
           `<audio controls preload="metadata" src="${src}" ` +
           `style="width:100%;max-width:100%;display:block"></audio>`;
-        if (/role="figure"/i.test(mid)) {
-          return (
-            open +
-            mid.replace(
-              /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i,
-              `$1${player}$3`,
-            ) +
-            close
-          );
-        }
-        return open + mid + player + close;
+        return open + fillFigureOrAppend(mid, close, player);
       }
       // image
       if (!entry.image) return full;
       const src = relTo(entry.image);
       if (/<img\b/i.test(mid)) {
-        return (
-          open +
-          mid.replace(
-            /(<img\b[^>]*\bsrc=")data:image\/(?:gif|svg\+xml)[^"]*/gi,
-            `$1${src}`,
-          ) +
-          close
+        const replaced = mid.replace(
+          /(<img\b[^>]*\bsrc=")data:image\/(?:gif|svg\+xml)[^"]*/gi,
+          `$1${src}`,
         );
+        return open + replaced + close;
       }
       const img =
         `<img alt="" src="${src}" referrerpolicy="same-origin" ` +
         `style="display:block;width:100%;max-width:100%;height:auto" />`;
-      if (/role="figure"/i.test(mid)) {
-        return (
-          open +
-          mid.replace(
-            /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i,
-            `$1${img}$3`,
-          ) +
-          close
-        );
-      }
-      return open + mid + img + close;
+      return open + fillFigureOrAppend(mid, close, img);
     },
   );
 
   return html;
+}
+
+const OG_IMAGE_CACHE = new Map<string, string | null>();
+
+async function fetchOgImageUrl(pageUrl: string): Promise<string | null> {
+  if (OG_IMAGE_CACHE.has(pageUrl)) return OG_IMAGE_CACHE.get(pageUrl)!;
+  try {
+    const res = await fetch(pageUrl, {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (compatible; notion-static-parser/1.0; +https://github.com/novailoveyou/notion-static-parser)",
+        accept: "text/html,application/xhtml+xml",
+      },
+      redirect: "follow",
+    });
+    if (!res.ok) {
+      OG_IMAGE_CACHE.set(pageUrl, null);
+      return null;
+    }
+    const html = await res.text();
+    const m =
+      html.match(
+        /property=["']og:image["']\s+content=["']([^"']+)["']/i,
+      ) ||
+      html.match(
+        /content=["']([^"']+)["']\s+property=["']og:image["']/i,
+      ) ||
+      html.match(
+        /property=["']og:image:url["']\s+content=["']([^"']+)["']/i,
+      );
+    const raw = m?.[1] || null;
+    let abs: string | null = null;
+    if (raw) {
+      try {
+        abs = new URL(raw, pageUrl).href;
+      } catch {
+        abs = null;
+      }
+    }
+    OG_IMAGE_CACHE.set(pageUrl, abs);
+    return abs;
+  } catch {
+    OG_IMAGE_CACHE.set(pageUrl, null);
+    return null;
+  }
+}
+
+async function downloadPublicAsset(
+  store: AssetStore,
+  url: string,
+): Promise<string | null> {
+  const clean = url.replace(/&amp;/g, "&");
+  const key = normalizeAssetKey(clean);
+  if (store.map.has(key)) return store.map.get(key)!;
+  try {
+    const res = await fetch(clean, {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (compatible; notion-static-parser/1.0)",
+        accept: "image/*,*/*",
+      },
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+    const ct = res.headers.get("content-type");
+    const buf = Buffer.from(await res.arrayBuffer());
+    return saveAsset(store, clean, buf, ct);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replace 1×1 gif placeholders in Notion bookmark cards with the target
+ * page's og:image (downloaded locally). Generic — works for any future
+ * bookmark links, not just Wordwall.
+ */
+export async function enrichBookmarkCovers(
+  html: string,
+  store: AssetStore,
+  pageLocalPath: string,
+): Promise<string> {
+  if (!/notion-bookmark-block/i.test(html)) return html;
+  if (!/data:image\/gif/i.test(html)) return html;
+
+  const pageDir = dirname(pageLocalPath) === "." ? "" : dirname(pageLocalPath);
+  const relTo = (targetFromRoot: string): string => {
+    let rel = relative(pageDir, targetFromRoot);
+    if (!rel) rel = basename(targetFromRoot);
+    rel = toPosix(rel);
+    if (!rel.startsWith(".") && !rel.startsWith("/")) rel = `./${rel}`;
+    return rel;
+  };
+
+  const starts: number[] = [];
+  const startRe = /<div\b[^>]*notion-bookmark-block[^>]*>/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = startRe.exec(html))) starts.push(sm.index);
+  if (!starts.length) return html;
+
+  type Patch = { start: number; end: number; chunk: string };
+  const patches: Patch[] = [];
+
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i]!;
+    const end = Math.min(
+      starts[i + 1] ?? start + 10000,
+      start + 10000,
+    );
+    const chunk = html.slice(start, end);
+    if (!/src="data:image\/gif/i.test(chunk)) continue;
+
+    const hrefs = [...chunk.matchAll(/\bhref="(https?:\/\/[^"]+)"/gi)].map(
+      (x) => x[1]!,
+    );
+    const external = hrefs.find((h) => {
+      try {
+        const u = new URL(h);
+        return !isNotionSiteHost(u.hostname);
+      } catch {
+        return false;
+      }
+    });
+    if (!external) continue;
+
+    const og = await fetchOgImageUrl(external);
+    if (!og) continue;
+    const saved = await downloadPublicAsset(store, og);
+    if (!saved) continue;
+    const local = relTo(saved);
+    const next = chunk.replace(
+      /(<img\b[^>]*\bsrc=")data:image\/gif[^"]*/gi,
+      `$1${local}`,
+    );
+    if (next !== chunk) patches.push({ start, end, chunk: next });
+  }
+
+  if (!patches.length) return html;
+  let out = html;
+  for (let i = patches.length - 1; i >= 0; i--) {
+    const p = patches[i]!;
+    out = out.slice(0, p.start) + p.chunk + out.slice(p.end);
+  }
+  return out;
 }
 
 export function ensureParentDir(filePath: string): void {

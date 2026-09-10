@@ -15,6 +15,7 @@ import {
   ensureParentDir,
   findRemainingRemoteUrls,
   injectBlockMedia,
+  enrichBookmarkCovers,
   rewriteCssFiles,
   rewriteHtml,
   saveCollectedResponses,
@@ -620,12 +621,14 @@ async function scrapeOnePage(
 
   html = rewriteHtml(html, localPath, url, store, pageUrlMap);
   html = injectBlockMedia(html, store, localPath);
+  html = await enrichBookmarkCovers(html, store, localPath);
   html = html.replace(/<base\b[^>]*>/gi, "");
 
   const runtimeSrc = "./assets/nsp-runtime.js";
   html = injectRuntime(html, rewrittenViews, runtimeSrc, url);
   html = rewriteHtml(html, localPath, url, store, pageUrlMap);
   html = injectBlockMedia(html, store, localPath);
+  html = await enrichBookmarkCovers(html, store, localPath);
 
   const abs = join(outRoot, localPath);
   ensureParentDir(abs);

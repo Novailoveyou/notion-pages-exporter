@@ -389,7 +389,7 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
 
     const mediaBlocks = Array.from(
       document.querySelectorAll(
-        ".notion-image-block, .notion-audio-block, .notion-video-block, .notion-file-block",
+        ".notion-image-block, .notion-audio-block, .notion-video-block, .notion-file-block, .notion-bookmark-block",
       ),
     ) as HTMLElement[];
 
@@ -401,20 +401,91 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       }
       await delay(200);
 
-      // Click to force Notion player / image mount
-      const hit =
-        block.querySelector("[role='button']") ||
-        block.querySelector("[role='figure']") ||
-        block;
-      try {
-        (hit as HTMLElement).click();
-      } catch {
-        /* ignore */
+      // Click to force Notion player / image mount (never follow bookmark links)
+      if (!block.classList.contains("notion-bookmark-block")) {
+        const hit =
+          block.querySelector("[role='button']") ||
+          block.querySelector("[role='figure']") ||
+          block;
+        try {
+          (hit as HTMLElement).click();
+        } catch {
+          /* ignore */
+        }
+        await delay(350);
+      } else {
+        await delay(400);
       }
-      await delay(350);
 
       // Pull URLs from React fiber
       walkFiber(fiberOf(block));
+
+      // Bookmark covers often stay as 1×1 gif until a real URL is applied
+      if (block.classList.contains("notion-bookmark-block")) {
+        const coverFound = new Set<string>();
+        const addCover = (u: string | null | undefined) => {
+          const a = abs(u);
+          if (a && /^https?:/i.test(a)) {
+            coverFound.add(a);
+            found.add(a);
+          }
+        };
+        const coverKeys = [
+          "bookmark_cover",
+          "bookmarkCover",
+          "cover",
+          "coverUrl",
+          "preview_image",
+          "previewImage",
+          "display_source",
+          "source",
+        ];
+        const dig = (node: unknown, depth = 0): void => {
+          if (!node || depth > 14) return;
+          const n = node as Record<string, unknown>;
+          const props = (n.memoizedProps || n.pendingProps || {}) as Record<
+            string,
+            unknown
+          >;
+          for (const key of coverKeys) {
+            const v = props[key];
+            if (typeof v === "string") addCover(v);
+          }
+          const bv = props.blockValue as Record<string, unknown> | undefined;
+          const format = (bv?.format || props.format) as
+            | Record<string, unknown>
+            | undefined;
+          if (format) {
+            for (const key of coverKeys) {
+              const v = format[key];
+              if (typeof v === "string") addCover(v);
+            }
+          }
+          dig(n.child, depth + 1);
+          dig(n.sibling, depth + 1);
+        };
+        dig(fiberOf(block));
+
+        const img = block.querySelector("img") as HTMLImageElement | null;
+        if (img) {
+          const src = img.getAttribute("src") || "";
+          if (!src || /^data:image\/(gif|svg)/i.test(src)) {
+            const covers = [...coverFound].filter(
+              (u) =>
+                /\.(png|jpe?g|webp|gif)(\?|$)/i.test(u) ||
+                /\/image\//i.test(u) ||
+                /screens\.cdn\.|wordwall|unsplash|og-image|notionusercontent/i.test(
+                  u,
+                ),
+            );
+            const pick = covers[0] || [...coverFound][0];
+            if (pick) {
+              img.setAttribute("src", pick);
+              img.removeAttribute("srcset");
+            }
+          }
+        }
+      }
 
       // Collect whatever Notion mounted
       for (const el of Array.from(
