@@ -10,15 +10,23 @@ export const RUNTIME_JS = `(() => {
     '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3.22 3.22a.75.75 0 0 1 1.06 0L8 6.94l3.72-3.72a.75.75 0 1 1 1.06 1.06L9.06 8l3.72 3.72a.75.75 0 1 1-1.06 1.06L8 9.06l-3.72 3.72a.75.75 0 0 1-1.06-1.06L6.94 8 3.22 4.28a.75.75 0 0 1 0-1.06z"/></svg>';
 
   function syncViewport() {
-    document.documentElement.style.setProperty("--full-viewport-height", "100dvh");
-    for (const el of $$(".notion-frame, main.notion-frame, .notion-cursor-listener")) {
-      if (el.style && el.style.width && /px$/.test(el.style.width)) {
-        el.style.width = "100%";
-        el.style.maxWidth = "100%";
+    const root = document.documentElement;
+    const body = document.body;
+    if (!root || !body) return;
+    try {
+      root.style.setProperty("--full-viewport-height", "100dvh");
+      for (const el of $$(".notion-frame, main.notion-frame, .notion-cursor-listener")) {
+        if (!el || !el.style) continue;
+        if (el.style.width && /px$/.test(el.style.width)) {
+          el.style.width = "100%";
+          el.style.maxWidth = "100%";
+        }
       }
+      body.style.width = "100%";
+      body.style.maxWidth = "100%";
+    } catch (_) {
+      /* ignore — can race during fullscreen / lightbox */
     }
-    document.body.style.width = "100%";
-    document.body.style.maxWidth = "100%";
   }
 
   function hidePromos() {
@@ -777,6 +785,44 @@ export const RUNTIME_JS = `(() => {
     }
   }
 
+  function isZoomableImage(img) {
+    if (!img || img.tagName !== "IMG") return false;
+    if (img.closest(".notion-collection-item a, .notion-gallery-view .notion-collection-item")) {
+      return false;
+    }
+    if (img.closest(".notion-bookmark-block")) return false;
+    if (!img.closest(".notion-image-block, .notion-page-content, [data-nsp-peek-body], .nsp-peek-content")) {
+      return false;
+    }
+    const src = img.currentSrc || img.getAttribute("src") || "";
+    if (!src) return false;
+    if (src.indexOf("data:image/gif") === 0 || src.indexOf("data:image/svg") === 0) return false;
+    return true;
+  }
+
+  function markZoomable(img) {
+    if (!isZoomableImage(img)) {
+      img.removeAttribute("data-nsp-zoom");
+      return;
+    }
+    img.setAttribute("data-nsp-zoom", "1");
+    img.style.cursor = "zoom-in";
+    img.style.pointerEvents = "auto";
+    const block = img.closest(".notion-image-block") || img.parentElement;
+    if (block) {
+      block.style.pointerEvents = "auto";
+      block.style.cursor = "zoom-in";
+    }
+    if (img.dataset.nspZoomWired === "1") return;
+    img.dataset.nspZoomWired = "1";
+    img.addEventListener("click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openLightbox(img);
+    });
+  }
+
   function enhanceMedia(scope) {
     const root = scope || document;
     repairBlockMedia(root);
@@ -786,6 +832,7 @@ export const RUNTIME_JS = `(() => {
         ".notion-page-content img",
         "[data-nsp-peek-body] img",
         ".nsp-peek-content img",
+        "[role='figure'] img",
       ].join(", "),
       root,
     )) {
@@ -799,20 +846,13 @@ export const RUNTIME_JS = `(() => {
         img.setAttribute("src", lazy);
       }
       // Don't flatten gallery / cover images — they use fixed heights
-      if (!img.closest(".notion-collection-item, .notion-gallery-view")) {
+      if (!img.closest(".notion-collection-item, .notion-gallery-view, .notion-bookmark-block")) {
         img.style.maxWidth = "100%";
         img.style.height = "auto";
         img.style.maxHeight = "none";
       }
-      // Notion freezes often set pointer-events:none on wrappers
-      const block = img.closest(".notion-image-block") || img.parentElement;
-      if (block) {
-        block.style.pointerEvents = "auto";
-        block.style.cursor = "pointer";
-      }
-      img.style.pointerEvents = "auto";
-      img.style.cursor = "pointer";
       repairMediaSrc(img);
+      markZoomable(img);
     }
     for (const audio of $$("audio", root)) {
       repairMediaSrc(audio);
@@ -1053,16 +1093,9 @@ export const RUNTIME_JS = `(() => {
         fromImg.closest(".nsp-peek-content") ||
         fromImg.closest(".notion-page-content") ||
         document);
-    const list = $$(
-      ".notion-image-block img, [role='figure'] img",
-      scope,
-    ).filter((img) => {
-      if (img.closest(".notion-collection-item a, .notion-gallery-view .notion-collection-item")) {
-        return false;
-      }
-      const src = img.currentSrc || img.getAttribute("src") || "";
-      return src && !/^data:image\\/(gif|svg)/i.test(src);
-    });
+    const list = $$(".notion-image-block img", scope).filter((img) =>
+      isZoomableImage(img),
+    );
     // Dedupe by src
     const seen = new Set();
     const out = [];
@@ -1072,226 +1105,169 @@ export const RUNTIME_JS = `(() => {
       seen.add(key);
       out.push(img);
     }
+    if (isZoomableImage(fromImg) && !out.includes(fromImg)) {
+      out.unshift(fromImg);
+    }
     return out.length ? out : [fromImg];
   }
 
   function openLightbox(img) {
-    const existing = document.querySelector("[data-nsp-lightbox]");
+    // Only remove the overlay dialog — never [data-nsp-lightbox] on <html>
+    // (wireLightbox used to set that flag on documentElement and wiped the page).
+    const existing = document.querySelector("div[data-nsp-lightbox]");
     if (existing) existing.remove();
 
+    const src0 = (img && (img.currentSrc || img.getAttribute("src") || img.src)) || "";
+    if (!src0 || src0.indexOf("data:image/gif") === 0 || src0.indexOf("data:image/svg") === 0) {
+      return;
+    }
+
     const gallery = collectLightboxImages(img);
-    let index = Math.max(0, gallery.indexOf(img));
+    let index = gallery.indexOf(img);
     if (index < 0) index = 0;
 
     const overlay = document.createElement("div");
     overlay.setAttribute("data-nsp-lightbox", "1");
-    Object.assign(overlay.style, {
-      position: "fixed",
-      inset: "0",
-      background: "rgba(0,0,0,.82)",
-      zIndex: "50000",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: "16px",
-      cursor: "zoom-out",
-      boxSizing: "border-box",
-    });
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.style.cssText =
+      "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;" +
+      "background:#111;display:flex;flex-direction:column;align-items:center;" +
+      "justify-content:center;padding:16px;box-sizing:border-box;cursor:zoom-out;color:#fff;";
 
     const toolbar = document.createElement("div");
-    Object.assign(toolbar.style, {
-      position: "absolute",
-      top: "12px",
-      right: "12px",
-      left: "12px",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "flex-end",
-      gap: "8px",
-      zIndex: "2",
-      cursor: "default",
-    });
+    toolbar.style.cssText =
+      "position:absolute;top:12px;left:12px;right:12px;display:flex;" +
+      "align-items:center;justify-content:flex-end;gap:8px;z-index:2;cursor:default;";
 
     const counter = document.createElement("div");
-    Object.assign(counter.style, {
-      marginRight: "auto",
-      color: "rgba(255,255,255,.75)",
-      fontSize: "13px",
-      fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    });
+    counter.style.cssText =
+      "margin-right:auto;color:rgba(255,255,255,.75);font-size:13px;" +
+      "font-family:ui-sans-serif,system-ui,sans-serif;";
 
-    const mkBtn = (label, html, onClick) => {
+    function mkBtn(label, html, onClick) {
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("aria-label", label);
       b.title = label;
       b.innerHTML = html;
-      Object.assign(b.style, {
-        appearance: "none",
-        border: "none",
-        background: "rgba(255,255,255,.14)",
-        color: "#fff",
-        borderRadius: "8px",
-        padding: "8px 10px",
-        cursor: "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "6px",
-        fontSize: "13px",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-      });
+      b.style.cssText =
+        "appearance:none;border:none;background:rgba(255,255,255,.14);color:#fff;" +
+        "border-radius:8px;padding:8px 10px;cursor:pointer;display:inline-flex;" +
+        "align-items:center;gap:6px;font-size:13px;" +
+        "font-family:ui-sans-serif,system-ui,sans-serif;";
       b.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
         onClick(e);
       });
       return b;
-    };
+    }
 
     const EXPAND_SVG =
       '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M4.5 3.375A1.125 1.125 0 0 0 3.375 4.5V8a.625.625 0 1 0 1.25 0V5.508l4.067 4.067a.625.625 0 0 0 .884-.884L5.508 4.625H8a.625.625 0 1 0 0-1.25zM15.5 16.625a1.125 1.125 0 0 0 1.125-1.125V12a.625.625 0 1 0-1.25 0v2.492l-4.067-4.067a.625.625 0 1 0-.884.884l4.067 4.066H12a.625.625 0 1 0 0 1.25z"/></svg>';
     const COMPRESS_SVG =
       '<svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M8.125 3.375a.625.625 0 0 1 .625.625V8c0 .69-.56 1.25-1.25 1.25H3.999a.625.625 0 1 1 0-1.25h2.492L2.424 4.183a.625.625 0 1 1 .884-.884L7.375 7.242V5a.625.625 0 0 1 .75-.625zM11.875 16.625a.625.625 0 0 1-.625-.625V12c0-.69.56-1.25 1.25-1.25h3.501a.625.625 0 1 1 0 1.25h-2.492l4.067 4.067a.625.625 0 1 1-.884.884L12.625 12.758V15a.625.625 0 0 1-.75.625z"/></svg>';
     const EXT_SVG =
-      '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.75 2a.75.75 0 0 1 0 1.5H3.5v9h9V9.25a.75.75 0 0 1 1.5 0v4A.75.75 0 0 1 13.25 14h-10A.75.75 0 0 1 2.5 13.25v-10A.75.75 0 0 1 3.25 2zm3.72.22a.75.75 0 0 1 .78-.17l.08.04.08.05.06.06.04.05L14.53 5.4a.75.75 0 0 1-1.06 1.06L12.5 5.49V10a.75.75 0 0 1-1.5 0V3.75a.75.75 0 0 1 .75-.75h.01z"/></svg>';
+      '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.75 2a.75.75 0 0 1 0 1.5H3.5v9h9V9.25a.75.75 0 0 1 1.5 0v4A.75.75 0 0 1 13.25 14h-10A.75.75 0 0 1 2.5 13.25v-10A.75.75 0 0 1 3.25 2zm3.72.22a.75.75 0 0 1 .78-.17l.08.04.08.05.06.06.04.05L14.53 5.4a.75.75 0 0 1-1.06 1.06L12.5 5.49V10a.75.75 0 0 1 .75-.75h.01z"/></svg>';
 
     const panel = document.createElement("div");
-    Object.assign(panel.style, {
-      position: "relative",
-      maxWidth: "min(1200px, 96vw)",
-      maxHeight: "88vh",
-      cursor: "default",
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      gap: "12px",
-    });
+    panel.style.cssText =
+      "position:relative;max-width:min(1200px,96vw);max-height:88vh;cursor:default;" +
+      "display:flex;flex-direction:column;align-items:center;gap:12px;";
 
     const big = document.createElement("img");
-    Object.assign(big.style, {
-      display: "block",
-      maxWidth: "96vw",
-      maxHeight: "78vh",
-      width: "auto",
-      height: "auto",
-      objectFit: "contain",
-      borderRadius: "6px",
-      boxShadow: "0 12px 48px rgba(0,0,0,.45)",
-      background: "rgba(255,255,255,.04)",
-    });
+    big.alt = (img && img.alt) || "";
+    big.style.cssText =
+      "display:block;max-width:96vw;max-height:78vh;width:auto;height:auto;" +
+      "object-fit:contain;border-radius:6px;background:#1a1a1a;";
 
     const nav = document.createElement("div");
-    Object.assign(nav.style, {
-      display: "flex",
-      gap: "8px",
-      alignItems: "center",
-      justifyContent: "center",
-      cursor: "default",
-    });
-
-    const actions = document.createElement("div");
-    Object.assign(actions.style, {
-      display: "flex",
-      gap: "8px",
-      justifyContent: "center",
-      flexWrap: "wrap",
-      cursor: "default",
-    });
+    nav.style.cssText =
+      "display:flex;gap:8px;align-items:center;justify-content:center;cursor:default;";
 
     const openFullLink = document.createElement("a");
     openFullLink.target = "_blank";
     openFullLink.rel = "noopener noreferrer";
     openFullLink.innerHTML = EXT_SVG + "<span>Open full size</span>";
-    Object.assign(openFullLink.style, {
-      color: "#fff",
-      fontSize: "13px",
-      textDecoration: "none",
-      padding: "8px 12px",
-      borderRadius: "8px",
-      background: "rgba(255,255,255,.14)",
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "6px",
-      fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    });
+    openFullLink.style.cssText =
+      "color:#fff;font-size:13px;text-decoration:none;padding:8px 12px;" +
+      "border-radius:8px;background:rgba(255,255,255,.14);display:inline-flex;" +
+      "align-items:center;gap:6px;font-family:ui-sans-serif,system-ui,sans-serif;";
     openFullLink.addEventListener("click", (e) => e.stopPropagation());
 
-    let fsBtn;
-    const syncFsBtn = () => {
+    let fsBtn = null;
+
+    function syncFsBtn() {
+      if (!fsBtn) return;
       const on = !!document.fullscreenElement;
-      fsBtn.innerHTML = (on ? COMPRESS_SVG : EXPAND_SVG) +
+      fsBtn.innerHTML =
+        (on ? COMPRESS_SVG : EXPAND_SVG) +
         "<span>" + (on ? "Exit fullscreen" : "Fullscreen") + "</span>";
       fsBtn.setAttribute("aria-label", on ? "Exit fullscreen" : "Fullscreen");
       fsBtn.title = on ? "Exit fullscreen" : "Fullscreen";
-    };
+    }
 
-    const show = (i) => {
-      index = (i + gallery.length) % gallery.length;
-      const srcImg = gallery[index];
-      const src = srcImg.currentSrc || srcImg.src;
+    function show(i) {
+      if (!gallery.length) {
+        big.src = src0;
+        openFullLink.href = src0;
+        return;
+      }
+      index = ((i % gallery.length) + gallery.length) % gallery.length;
+      const srcImg = gallery[index] || img;
+      const src =
+        (srcImg && (srcImg.currentSrc || srcImg.getAttribute("src") || srcImg.src)) ||
+        src0;
       big.src = src;
-      big.alt = srcImg.alt || "";
+      big.alt = (srcImg && srcImg.alt) || "";
       openFullLink.href = src;
-      counter.textContent = gallery.length > 1
-        ? (index + 1) + " / " + gallery.length
-        : "";
+      counter.textContent =
+        gallery.length > 1 ? index + 1 + " / " + gallery.length : "";
       prevBtn.style.visibility = gallery.length > 1 ? "visible" : "hidden";
       nextBtn.style.visibility = gallery.length > 1 ? "visible" : "hidden";
-    };
+    }
 
     const prevBtn = mkBtn("Previous", "‹", () => show(index - 1));
     const nextBtn = mkBtn("Next", "›", () => show(index + 1));
-    Object.assign(prevBtn.style, { fontSize: "22px", padding: "4px 14px" });
-    Object.assign(nextBtn.style, { fontSize: "22px", padding: "4px 14px" });
+    prevBtn.style.fontSize = "22px";
+    nextBtn.style.fontSize = "22px";
+    prevBtn.style.padding = "4px 14px";
+    nextBtn.style.padding = "4px 14px";
 
-    fsBtn = mkBtn("Fullscreen", EXPAND_SVG + "<span>Fullscreen</span>", async () => {
-      try {
-        if (document.fullscreenElement) {
-          await document.exitFullscreen();
-        } else {
-          await overlay.requestFullscreen();
+    fsBtn = mkBtn("Fullscreen", EXPAND_SVG + "<span>Fullscreen</span>", () => {
+      const go = async () => {
+        try {
+          if (document.fullscreenElement) await document.exitFullscreen();
+          else await overlay.requestFullscreen();
+        } catch (_) {
+          const on = overlay.getAttribute("data-nsp-fs") === "1";
+          overlay.setAttribute("data-nsp-fs", on ? "0" : "1");
+          big.style.maxHeight = on ? "78vh" : "92vh";
+          syncFsBtn();
         }
-      } catch (_) {
-        // Fallback: expand panel visually if Fullscreen API blocked
-        const expanded = overlay.getAttribute("data-nsp-fs") === "1";
-        overlay.setAttribute("data-nsp-fs", expanded ? "0" : "1");
-        if (!expanded) {
-          panel.style.maxWidth = "100%";
-          panel.style.maxHeight = "100%";
-          big.style.maxWidth = "100vw";
-          big.style.maxHeight = "92vh";
-        } else {
-          panel.style.maxWidth = "min(1200px, 96vw)";
-          panel.style.maxHeight = "88vh";
-          big.style.maxWidth = "96vw";
-          big.style.maxHeight = "78vh";
-        }
-        syncFsBtn();
-      }
+      };
+      go();
     });
 
-    const closeBtn = mkBtn("Close", CLOSE_SVG, () => close());
-
-    const close = async () => {
-      try {
-        if (document.fullscreenElement) await document.exitFullscreen();
-      } catch (_) {}
-      overlay.remove();
-      document.removeEventListener("keydown", onKey, true);
-      document.removeEventListener("fullscreenchange", syncFsBtn);
-    };
+    function close() {
+      const done = async () => {
+        try {
+          if (document.fullscreenElement) await document.exitFullscreen();
+        } catch (_) {}
+        overlay.remove();
+        document.removeEventListener("keydown", onKey, true);
+        document.removeEventListener("fullscreenchange", syncFsBtn);
+      };
+      done();
+    }
 
     function onKey(e) {
       if (!overlay.isConnected) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        if (document.fullscreenElement) {
-          document.exitFullscreen().catch(() => close());
-        } else {
-          close();
-        }
+        close();
         return;
       }
       if (e.key === "ArrowLeft") {
@@ -1303,27 +1279,29 @@ export const RUNTIME_JS = `(() => {
       }
     }
 
+    const closeBtn = mkBtn("Close", CLOSE_SVG, () => close());
+
     toolbar.appendChild(counter);
     toolbar.appendChild(fsBtn);
     toolbar.appendChild(openFullLink);
     toolbar.appendChild(closeBtn);
     nav.appendChild(prevBtn);
     nav.appendChild(nextBtn);
-    actions.appendChild(nav);
     panel.appendChild(big);
-    panel.appendChild(actions);
+    panel.appendChild(nav);
     overlay.appendChild(toolbar);
     overlay.appendChild(panel);
 
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) close();
     });
-    big.addEventListener("click", (e) => e.stopPropagation());
     panel.addEventListener("click", (e) => e.stopPropagation());
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("fullscreenchange", syncFsBtn);
 
-    document.body.appendChild(overlay);
+    const mount = document.body || document.getElementById("notion-app");
+    if (!mount) return;
+    mount.appendChild(overlay);
     show(index);
     syncFsBtn();
   }
@@ -1357,38 +1335,22 @@ export const RUNTIME_JS = `(() => {
   }
 
   function wireLightbox() {
-    if (document.documentElement.dataset.nspLightbox) return;
-    document.documentElement.dataset.nspLightbox = "1";
+    if (document.documentElement.dataset.nspLbWired) return;
+    document.documentElement.dataset.nspLbWired = "1";
     document.addEventListener("click", (e) => {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       const t = e.target;
       if (!t || !t.closest) return;
-      if (t.closest("[data-nsp-lightbox]")) return;
-      // Hit the img, or the image block / figure wrapper around it
-      let img = t.closest("img");
+      if (t.closest("div[data-nsp-lightbox]")) return;
+      let img = t.closest("img[data-nsp-zoom], .notion-image-block img");
       if (!img) {
-        const host = t.closest(
-          ".notion-image-block, [role='figure']",
-        );
+        const host = t.closest(".notion-image-block");
         if (host) img = host.querySelector("img");
       }
-      if (!img) return;
-      // Skip collection card covers (those navigate)
-      if (img.closest(".notion-collection-item a, .notion-gallery-view .notion-collection-item")) {
-        return;
-      }
-      // Only content images (page body or peek), not chrome/icons
-      if (
-        !img.closest(
-          ".notion-image-block, .notion-page-content, [data-nsp-peek-body], .nsp-peek-content, [role='figure']",
-        )
-      ) {
-        return;
-      }
-      const src = img.currentSrc || img.getAttribute("src") || "";
-      if (!src || /^data:image\\/(gif|svg)/i.test(src)) return;
+      if (!img || !isZoomableImage(img)) return;
       e.preventDefault();
       e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
       openLightbox(img);
     }, true);
   }
@@ -1406,12 +1368,16 @@ export const RUNTIME_JS = `(() => {
       .notion-image-block img,
       .notion-page-content .notion-image-block img,
       [data-nsp-peek-body] .notion-image-block img,
-      [data-nsp-peek-body] img:not([src^="data:"]),
       .nsp-peek-content .notion-image-block img,
-      .nsp-peek-content img:not([src^="data:"]) {
+      img[data-nsp-zoom="1"] {
         max-width: 100% !important;
-        cursor: pointer !important;
+        cursor: zoom-in !important;
         pointer-events: auto !important;
+      }
+      .notion-image-block,
+      .notion-image-block [role="figure"],
+      .notion-image-block [data-content-editable-void] {
+        cursor: zoom-in !important;
       }
       .notion-image-block img,
       [data-nsp-peek-body] .notion-image-block img,
@@ -1423,8 +1389,8 @@ export const RUNTIME_JS = `(() => {
       }
       [data-nsp-peek-body] .notion-page-content,
       .nsp-peek-content .notion-page-content,
-      [data-nsp-peek-body] [role="figure"],
-      .nsp-peek-content [role="figure"] {
+      [data-nsp-peek-body] .notion-image-block [role="figure"],
+      .nsp-peek-content .notion-image-block [role="figure"] {
         max-width: 100% !important;
         overflow-x: hidden;
       }
@@ -1433,6 +1399,10 @@ export const RUNTIME_JS = `(() => {
         /* keep Notion cover sizing — don't force height:auto */
         max-width: 100%;
         cursor: pointer;
+      }
+      .notion-bookmark-block,
+      .notion-bookmark-block img {
+        cursor: pointer !important;
       }
       .notion-audio-block, .notion-audio-block audio {
         max-width: 100% !important;
@@ -1721,11 +1691,6 @@ export const RUNTIME_JS = `(() => {
         const urls = await res.json();
         reg.active && reg.active.postMessage({ type: "NSP_CACHE_URLS", urls });
       } catch (_) {}
-    });
-
-    // Suppress browser install banner; no floating "Install app" button
-    window.addEventListener("beforeinstallprompt", (e) => {
-      e.preventDefault();
     });
   }
 
@@ -2062,7 +2027,7 @@ export const RUNTIME_JS = `(() => {
     window.addEventListener("resize", syncViewport);
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        if (document.querySelector("[data-nsp-lightbox]")) return;
+        if (document.querySelector("div[data-nsp-lightbox]")) return;
         closePeek();
       }
     });
@@ -2133,6 +2098,12 @@ export function injectRuntime(
     height: auto !important;
     max-height: none !important;
     object-fit: contain !important;
+    cursor: zoom-in !important;
+    pointer-events: auto !important;
+  }
+  .notion-image-block, .notion-image-block [role="figure"] {
+    cursor: zoom-in !important;
+    pointer-events: auto !important;
   }
   .notion-audio-block, .notion-audio-block audio { max-width: 100% !important; width: 100%; }
   .notion-table-view, .notion-scroller.horizontal {
