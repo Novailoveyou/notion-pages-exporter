@@ -1,0 +1,501 @@
+import type { Page } from "puppeteer";
+
+export type CollectionViewCapture = {
+  blockId: string;
+  defaultLabel?: string;
+  defaultIndex?: number;
+  tabs: { label: string; html: string }[];
+};
+
+/**
+ * Click each collection view tab and capture the rendered body HTML so we can
+ * switch views offline without Notion's React runtime.
+ */
+export async function captureCollectionViews(
+  page: Page,
+): Promise<CollectionViewCapture[]> {
+  return page.evaluate(async () => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    const promoteMedia = (root: ParentNode) => {
+      for (const img of Array.from(root.querySelectorAll("img"))) {
+        const el = img as HTMLImageElement;
+        const ds =
+          el.getAttribute("data-src") ||
+          el.getAttribute("data-lazy-src") ||
+          el.getAttribute("data-original");
+        const src = el.getAttribute("src") || "";
+        if (
+          ds &&
+          (!src ||
+            src.startsWith("data:image/svg") ||
+            src.startsWith("data:image/gif"))
+        ) {
+          el.setAttribute("src", ds);
+        }
+        const srcset = el.getAttribute("srcset");
+        if (srcset) {
+          const candidates = srcset
+            .split(",")
+            .map((p) => p.trim().split(/\s+/)[0]!);
+          const last = candidates[candidates.length - 1];
+          if (last) el.setAttribute("src", last);
+        }
+        const cur = el.getAttribute("src");
+        if (cur && !cur.startsWith("data:") && !cur.startsWith("blob:")) {
+          try {
+            el.setAttribute("src", new URL(cur, location.href).href);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      for (const el of Array.from(
+        root.querySelectorAll("a[href], audio[src], source[src], video[src]"),
+      )) {
+        for (const attr of ["href", "src"] as const) {
+          const v = el.getAttribute(attr);
+          if (!v || v.startsWith("#") || v.startsWith("data:") || v.startsWith("blob:"))
+            continue;
+          try {
+            el.setAttribute(attr, new URL(v, location.href).href);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    };
+
+    const waitImages = async (root: ParentNode) => {
+      const imgs = Array.from(root.querySelectorAll("img")).filter((img) => {
+        const s = img.getAttribute("src") || "";
+        return s.startsWith("http");
+      }) as HTMLImageElement[];
+      await Promise.all(
+        imgs.map(
+          (img) =>
+            new Promise<void>((resolve) => {
+              if (img.complete && img.naturalWidth > 0) return resolve();
+              const done = () => resolve();
+              img.addEventListener("load", done, { once: true });
+              img.addEventListener("error", done, { once: true });
+              setTimeout(done, 2500);
+            }),
+        ),
+      );
+    };
+
+    const out: {
+      blockId: string;
+      defaultLabel?: string;
+      defaultIndex?: number;
+      tabs: { label: string; html: string }[];
+    }[] = [];
+
+    const blocks = Array.from(
+      document.querySelectorAll(
+        ".notion-collection_view-block[data-block-id], .notion-collection_view_page-block[data-block-id]",
+      ),
+    ) as HTMLElement[];
+
+    const seen = new Set<string>();
+    for (const block of blocks) {
+      const blockId = block.getAttribute("data-block-id") || "";
+      if (!blockId || seen.has(blockId)) continue;
+      seen.add(blockId);
+
+      const root =
+        (block.closest(
+          ".notion-selectable.notion-collection_view-block, .notion-selectable.notion-collection_view_page-block",
+        ) as HTMLElement) || block;
+      const tablist = root.querySelector('[role="tablist"]');
+      if (!tablist) continue;
+
+      // Prefer outer tab buttons — inner [role=tab] often opens a settings dialog
+      const rawTabs = Array.from(
+        tablist.querySelectorAll(
+          ".notion-collection-view-tab-button, [role='tab'], .notion-collection-view-tab",
+        ),
+      ) as HTMLElement[];
+      const tabs: HTMLElement[] = [];
+      for (const t of rawTabs) {
+        if (t.classList.contains("notion-collection-view-tab-button")) {
+          tabs.push(t);
+        } else if (!t.closest(".notion-collection-view-tab-button")) {
+          tabs.push(t);
+        }
+      }
+      if (tabs.length < 1) continue;
+
+      const defaultIndex = Math.max(
+        0,
+        tabs.findIndex((t) => /gallery/i.test(t.textContent || "")),
+      );
+      const defaultLabel =
+        (tabs[defaultIndex]?.textContent || "").replace(/\s+/g, " ").trim() ||
+        "Gallery view";
+
+      const captured: { label: string; html: string }[] = [];
+      for (const tab of tabs) {
+        const label =
+          (tab.textContent || "").replace(/\s+/g, " ").trim() || "View";
+        tab.click();
+        // Dismiss view-settings popover if the click opened one
+        const esc = new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+        });
+        document.dispatchEvent(esc);
+        const wait = /calendar|table|board|timeline/i.test(label) ? 1800 : 900;
+        await delay(wait);
+
+        const expectSel = /calendar/i.test(label)
+          ? ".notion-calendar-view"
+          : /table/i.test(label)
+            ? ".notion-table-view"
+            : /board/i.test(label)
+              ? ".notion-board-view"
+              : /list/i.test(label)
+                ? ".notion-list-view"
+                : /gallery/i.test(label)
+                  ? ".notion-gallery-view"
+                  : null;
+        if (expectSel) {
+          for (let i = 0; i < 8; i++) {
+            if (root.querySelector(expectSel)) break;
+            tab.click();
+            document.dispatchEvent(esc);
+            await delay(400);
+          }
+        }
+
+        const body = root.querySelector(".notion-collection-view-body");
+        if (body) {
+          promoteMedia(body);
+          await waitImages(body);
+          await delay(200);
+          promoteMedia(body);
+          captured.push({ label, html: body.innerHTML });
+        }
+      }
+
+      // Restore default Gallery view so freeze/scrape sees the preferred tab
+      if (tabs[defaultIndex]) {
+        tabs[defaultIndex]!.click();
+        await delay(500);
+        const body = root.querySelector(".notion-collection-view-body");
+        if (body) {
+          promoteMedia(body);
+          await waitImages(body);
+        }
+      }
+
+      if (captured.length) {
+        out.push({
+          blockId,
+          defaultLabel,
+          defaultIndex,
+          tabs: captured,
+        });
+      }
+    }
+    return out;
+  });
+}
+
+/**
+ * Prepare the painted Notion DOM for a static host:
+ * keep header chrome, strip promo CTAs, fix fixed desktop widths,
+ * leave scripts out (we inject our own offline runtime instead).
+ */
+export async function freezeNotionPage(page: Page): Promise<string> {
+  await page.evaluate(async () => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    // Expand toggles so nested content (images, etc.) is present in the DOM
+    for (const block of Array.from(
+      document.querySelectorAll(".notion-toggle-block"),
+    )) {
+      const btn =
+        block.querySelector("[role='button']") ||
+        block.querySelector(":scope > div");
+      if (btn) {
+        (btn as HTMLElement).click();
+      }
+    }
+    await delay(400);
+
+    // Scroll the page so lazy images / audio players mount
+    const scroller =
+      (document.querySelector(".notion-frame .notion-scroller") as HTMLElement) ||
+      document.scrollingElement ||
+      document.body;
+    const maxY = Math.max(
+      scroller.scrollHeight,
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight,
+    );
+    for (let y = 0; y < maxY; y += Math.max(400, window.innerHeight * 0.8)) {
+      if ("scrollTo" in scroller) {
+        (scroller as HTMLElement).scrollTo?.(0, y);
+      }
+      window.scrollTo(0, y);
+      await delay(120);
+    }
+    window.scrollTo(0, 0);
+    if ("scrollTo" in scroller) (scroller as HTMLElement).scrollTo?.(0, 0);
+    await delay(300);
+
+    // Click audio blocks to force Notion to fetch signed media URLs
+    for (const block of Array.from(
+      document.querySelectorAll(".notion-audio-block"),
+    )) {
+      const hit =
+        block.querySelector("[role='button']") ||
+        block.querySelector("[role='figure']") ||
+        block;
+      try {
+        (hit as HTMLElement).click();
+      } catch {
+        /* ignore */
+      }
+      await delay(250);
+    }
+    await delay(800);
+
+    for (const img of Array.from(document.querySelectorAll("img"))) {
+      const el = img as HTMLImageElement;
+      const ds =
+        el.getAttribute("data-src") ||
+        el.getAttribute("data-lazy-src") ||
+        el.getAttribute("data-original");
+      if (
+        ds &&
+        (!el.getAttribute("src") || el.src.startsWith("data:image/svg") || el.src.startsWith("data:image/gif"))
+      ) {
+        el.setAttribute("src", ds);
+      }
+      const srcset = el.getAttribute("srcset");
+      if (srcset) {
+        const candidates = srcset
+          .split(",")
+          .map((p) => p.trim().split(/\s+/)[0]!);
+        const last = candidates[candidates.length - 1];
+        if (last) el.setAttribute("src", last);
+      }
+      // Nudge lazy loaders by scrolling the image into view
+      try {
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch {
+        /* ignore */
+      }
+    }
+    await delay(600);
+
+    const absAttr = (el: Element, attr: string) => {
+      const v = el.getAttribute(attr);
+      if (!v || v.startsWith("data:") || v.startsWith("blob:") || v.startsWith("#"))
+        return;
+      try {
+        el.setAttribute(attr, new URL(v, location.href).href);
+      } catch {
+        /* ignore */
+      }
+    };
+    for (const el of Array.from(document.querySelectorAll("[href]")))
+      absAttr(el, "href");
+    for (const el of Array.from(document.querySelectorAll("[src]")))
+      absAttr(el, "src");
+    for (const el of Array.from(document.querySelectorAll("[poster]")))
+      absAttr(el, "poster");
+    for (const el of Array.from(document.querySelectorAll("audio, source, video"))) {
+      absAttr(el, "src");
+      const audio = el as HTMLAudioElement;
+      if (el.tagName === "AUDIO") {
+        audio.controls = true;
+        audio.preload = "metadata";
+      }
+    }
+
+    // Collapse toggles for default closed state; content stays in DOM
+    for (const block of Array.from(
+      document.querySelectorAll(".notion-toggle-block"),
+    )) {
+      (block as HTMLElement).setAttribute("data-nsp-open", "0");
+      const kids = Array.from(block.children);
+      for (let i = 1; i < kids.length; i++) {
+        (kids[i] as HTMLElement).style.display = "none";
+      }
+      // Also hide deep content rows Notion nests under first child
+      const first = block.querySelector(":scope > div");
+      if (first && kids.length === 1) {
+        const inner = Array.from(first.children);
+        for (let i = 1; i < inner.length; i++) {
+          (inner[i] as HTMLElement).style.display = "none";
+        }
+      }
+    }
+
+    // Inline accessible CSS (Notion look without remote dependency)
+    const cssChunks: string[] = [];
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        const rules = sheet.cssRules;
+        if (!rules) continue;
+        const parts: string[] = [];
+        for (const rule of Array.from(rules)) parts.push(rule.cssText);
+        if (parts.length) cssChunks.push(parts.join("\n"));
+      } catch {
+        /* cross-origin — keep <link> */
+      }
+    }
+    if (cssChunks.length) {
+      const style = document.createElement("style");
+      style.setAttribute("data-notion-static-parser", "inlined");
+      // Drop print-only chrome-hiding rules Notion ships without a usable @media
+      // wrapper after cssText serialization in some browsers.
+      let css = cssChunks.join("\n\n");
+      css = css.replace(
+        /@media\s+print\s*\{[\s\S]*?\}\s*/gi,
+        "/* print styles omitted */\n",
+      );
+      style.textContent = css;
+      document.head.appendChild(style);
+    }
+
+    // Always keep the page topbar (breadcrumbs) visible offline
+    const topbarFix = document.createElement("style");
+    topbarFix.setAttribute("data-notion-static-parser", "topbar");
+    topbarFix.textContent = `
+      .notion-topbar {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        height: 44px !important;
+        pointer-events: auto !important;
+      }
+      header {
+        display: block !important;
+        visibility: visible !important;
+      }
+    `;
+    document.head.appendChild(topbarFix);
+
+    // Strip Notion client JS (would blank the page offline). We inject nsp-runtime.
+    for (const el of Array.from(
+      document.querySelectorAll(
+        "script, link[rel='modulepreload'], link[rel='preload'][as='script']",
+      ),
+    )) {
+      el.remove();
+    }
+    for (const el of Array.from(
+      document.querySelectorAll(
+        "link[rel='manifest'], meta[http-equiv='Content-Security-Policy']",
+      ),
+    )) {
+      el.remove();
+    }
+
+    for (const sel of [
+      ".notion-overlay-container",
+      ".notion-help-button",
+      "[data-testid='exit-presentation-mode-button']",
+    ]) {
+      for (const el of Array.from(document.querySelectorAll(sel))) el.remove();
+    }
+
+    for (const el of Array.from(document.querySelectorAll("[contenteditable]"))) {
+      el.removeAttribute("contenteditable");
+      (el as HTMLElement).style.caretColor = "transparent";
+    }
+
+    // Remove promo / auth CTAs in the topbar (keep the topbar shell + breadcrumbs + ⋮)
+    const promoRe =
+      /^(get notion free|log in|sign up|duplicate|try notion|download|share site to socials)$/i;
+    for (const el of Array.from(
+      document.querySelectorAll(".notion-topbar [role='button'], .notion-topbar a"),
+    )) {
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      const label = (el.getAttribute("aria-label") || "").trim();
+      if (promoRe.test(t) || promoRe.test(label)) {
+        const wrap = el.closest(".xjp7ctv") || el;
+        (wrap as HTMLElement).remove();
+      }
+    }
+    // Remove topbar Search only (not collection Search)
+    for (const el of Array.from(
+      document.querySelectorAll(".notion-topbar [role='button']"),
+    )) {
+      if (el.closest(".notion-collection_view-block")) continue;
+      const label = (el.getAttribute("aria-label") || "").toLowerCase();
+      const svg = el.querySelector(
+        "svg.magnifyingGlass, svg.magnifyingGlassSmall",
+      );
+      if (label === "search" || (svg && !label.includes("more"))) {
+        const wrap = el.closest(".xjp7ctv") || el;
+        (wrap as HTMLElement).remove();
+      }
+    }
+    // Explicit Get Notion free text nodes
+    for (const el of Array.from(document.querySelectorAll(".notion-topbar *"))) {
+      const t = (el.textContent || "").replace(/\s+/g, " ").trim();
+      if (t === "Get Notion free" && el.children.length === 0) {
+        const btn = el.closest("[role='button']") || el;
+        btn.remove();
+      }
+    }
+
+    // Unlock responsive layout: Notion freezes desktop widths at scrape time
+    const html = document.documentElement;
+    html.style.setProperty("--full-viewport-height", "100dvh");
+    html.style.removeProperty("width");
+
+    for (const el of Array.from(
+      document.querySelectorAll(".notion-frame, .notion-cursor-listener, main"),
+    )) {
+      const h = el as HTMLElement;
+      if (h.style.width && /px$/.test(h.style.width)) {
+        h.style.width = "100%";
+        h.style.maxWidth = "100%";
+      }
+      if (h.style.height && h.style.height.includes("100vh")) {
+        h.style.height = "calc(-44px + 100dvh)";
+      }
+    }
+
+    document.documentElement.style.overflow = "auto";
+    document.body.style.overflow = "auto";
+    document.body.style.height = "auto";
+    document.body.style.width = "100%";
+    document.body.style.maxWidth = "100%";
+
+    await delay(50);
+  });
+
+  return page.content();
+}
+
+/** Wait until the live Notion UI shell + page content are painted. */
+export async function waitForLiveNotionUi(page: Page): Promise<void> {
+  await page
+    .waitForFunction(
+      () => {
+        const app =
+          document.querySelector(".notion-app-inner") ||
+          document.querySelector("#notion-app") ||
+          document.querySelector(".notion-frame");
+        const content =
+          document.querySelector(".notion-page-content") ||
+          document.querySelector(".notion-collection-view-body") ||
+          document.querySelector(".notion-page-block") ||
+          document.querySelector("[data-block-id]");
+        const text = (document.body?.innerText || "").trim();
+        return Boolean(app && content) || text.length > 80;
+      },
+      { timeout: 90_000 },
+    )
+    .catch(() => {
+      /* continue */
+    });
+}

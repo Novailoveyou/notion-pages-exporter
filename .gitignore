@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+.env
+*.tgz
+.npmrc
+.logs/
+_site/
+_site.nsp-staging/
+_site.nsp-backup/
+*.nsp-staging/
+*.nsp-backup/
+out/

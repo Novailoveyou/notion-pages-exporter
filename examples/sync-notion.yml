@@ -1,0 +1,78 @@
+# Sync public Notion site → commit → GitHub Pages
+#
+# Works on ubuntu-latest with Chromium in a container.
+# Set repository variable NOTION_URL to your public *.notion.site root.
+
+name: Sync Notion
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */4 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Chrome profile (Cloudflare cookies)
+        uses: actions/cache@v4
+        with:
+          path: ~/.notion-static-parser/chrome-profile
+          key: notion-chrome-profile-${{ runner.os }}-v2
+          restore-keys: |
+            notion-chrome-profile-
+
+      - name: Install Google Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+          install-dependencies: true
+
+      - name: Scrape Notion
+        env:
+          NOTION_URL: ${{ vars.NOTION_URL }}
+          # Prefer the Chrome we just installed (Linux container safe)
+          PUPPETEER_EXECUTABLE_PATH: ${{ steps.chrome.outputs.chrome-path }}
+          # CI logs: phase lines every few seconds (no TTY spinner)
+          CI: true
+        run: |
+          if [ -z "$NOTION_URL" ]; then
+            echo "Set repository variable NOTION_URL to your public notion.site root"
+            exit 1
+          fi
+          echo "Chrome: $PUPPETEER_EXECUTABLE_PATH"
+          bunx --bun notion-static-parser sync \
+            --url "$NOTION_URL" \
+            --out . \
+            --keep-cname \
+            --delay-ms 4000 \
+            --retries 4 \
+            --concurrency 2
+
+      - name: Commit & push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # Keep local tooling / staging leftovers out of the Pages commit
+          git reset -- .notion-static-parser 2>/dev/null || true
+          git reset -- '*.nsp-staging' '*.nsp-backup' 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "chore: sync notion static mirror"
+          git push
