@@ -177,16 +177,46 @@ export function attachResponseCollector(page: Page): {
   const responses = new Map<string, HTTPResponse>();
   const onResponse = (res: HTTPResponse) => {
     const type = res.request().resourceType();
+    const url = res.url();
+    if (!url.startsWith("http") || !res.ok()) return;
+    if (isNotionPageAssetUrl(url)) return;
+
+    const ct = (res.headers()["content-type"] ?? "").toLowerCase();
+    if (ct.includes("text/html")) return;
+
+    const looksMediaUrl =
+      /\/(image|file)\//i.test(url) ||
+      /file\.notion\.so/i.test(url) ||
+      /\.(mp3|m4a|wav|ogg|aac|png|jpe?g|webp|gif|svg|pdf|woff2?|ttf|otf|css)(\?|$)/i.test(
+        url,
+      );
+    const looksMediaCt =
+      ct.includes("image/") ||
+      ct.includes("audio/") ||
+      ct.includes("video/") ||
+      ct.includes("font/") ||
+      ct.includes("css") ||
+      ct.includes("octet-stream");
+
+    const allowedType = [
+      "stylesheet",
+      "image",
+      "font",
+      "media",
+      "other",
+      "xhr",
+      "fetch",
+    ].includes(type);
+
+    if (!allowedType && !looksMediaUrl && !looksMediaCt) return;
     if (
-      !["stylesheet", "image", "font", "media", "other"].includes(type)
+      (type === "xhr" || type === "fetch") &&
+      !looksMediaUrl &&
+      !looksMediaCt
     ) {
       return;
     }
-    const url = res.url();
-    if (!url.startsWith("http") || !res.ok()) return;
-    const ct = res.headers()["content-type"] ?? "";
-    if (ct.includes("text/html")) return;
-    if (isNotionPageAssetUrl(url)) return;
+
     urls.add(url);
     responses.set(normalizeAssetKey(url), res);
   };
@@ -660,36 +690,65 @@ export function injectBlockMedia(
     return rel;
   };
 
-  // Audio: fill empty custom player shells
+  // Audio / image: fill empty Notion figure shells from ?id=<blockId> assets
   html = html.replace(
-    /(<div\b[^>]*data-block-id="([^"]+)"[^>]*notion-audio-block[^>]*>)([\s\S]*?)(<\/div>\s*<\/div>\s*<\/div>)/gi,
-    (full, open: string, id: string, mid: string, close: string) => {
-      if (/<audio\b/i.test(mid)) return full;
+    /(<div\b[^>]*data-block-id="([^"]+)"[^>]*notion-(audio|image)-block[^>]*>)([\s\S]*?)(<\/div>\s*<\/div>\s*<\/div>)/gi,
+    (
+      full,
+      open: string,
+      id: string,
+      kind: string,
+      mid: string,
+      close: string,
+    ) => {
       const entry = index.get(normalizeBlockId(id) || "");
-      if (!entry?.audio) return full;
-      const src = relTo(entry.audio);
-      const player =
-        `<audio controls preload="metadata" src="${src}" ` +
-        `style="width:100%;max-width:100%;display:block"></audio>`;
-      // Prefer replacing empty figure; otherwise append before close
-      if (/role="figure"/i.test(mid) && !/<audio\b/i.test(mid)) {
-        const filled = mid.replace(
-          /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i,
-          `$1${player}$3`,
-        );
-        return open + filled + close;
+      if (!entry) return full;
+      const isAudio = kind.toLowerCase() === "audio";
+      if (isAudio) {
+        if (/<audio\b/i.test(mid) || !entry.audio) return full;
+        const src = relTo(entry.audio);
+        const player =
+          `<audio controls preload="metadata" src="${src}" ` +
+          `style="width:100%;max-width:100%;display:block"></audio>`;
+        if (/role="figure"/i.test(mid)) {
+          return (
+            open +
+            mid.replace(
+              /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i,
+              `$1${player}$3`,
+            ) +
+            close
+          );
+        }
+        return open + mid + player + close;
       }
-      return open + mid + player + close;
-    },
-  );
-
-  // Images: data: gif/svg placeholders → local asset for that block
-  html = html.replace(
-    /(<div\b[^>]*data-block-id="([^"]+)"[^>]*notion-image-block[^>]*>[\s\S]*?<img\b[^>]*\bsrc=")data:image\/(?:gif|svg\+xml)[^"]*/gi,
-    (full, prefix: string, id: string) => {
-      const entry = index.get(normalizeBlockId(id) || "");
-      if (!entry?.image) return full;
-      return prefix + relTo(entry.image);
+      // image
+      if (!entry.image) return full;
+      const src = relTo(entry.image);
+      if (/<img\b/i.test(mid)) {
+        return (
+          open +
+          mid.replace(
+            /(<img\b[^>]*\bsrc=")data:image\/(?:gif|svg\+xml)[^"]*/gi,
+            `$1${src}`,
+          ) +
+          close
+        );
+      }
+      const img =
+        `<img alt="" src="${src}" referrerpolicy="same-origin" ` +
+        `style="display:block;width:100%;max-width:100%;height:auto" />`;
+      if (/role="figure"/i.test(mid)) {
+        return (
+          open +
+          mid.replace(
+            /(<div\b[^>]*role="figure"[^>]*>)(\s*)(<\/div>)/i,
+            `$1${img}$3`,
+          ) +
+          close
+        );
+      }
+      return open + mid + img + close;
     },
   );
 

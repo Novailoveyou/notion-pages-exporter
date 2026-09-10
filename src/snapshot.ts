@@ -204,6 +204,233 @@ export async function captureCollectionViews(
 }
 
 /**
+ * Force Notion to mount lazy image/audio into the DOM, and extract source URLs
+ * from React fiber props when the custom player stays empty.
+ * Returns discovered remote media URLs (for download).
+ */
+export async function hydrateNotionMedia(page: Page): Promise<string[]> {
+  return page.evaluate(async () => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const found = new Set<string>();
+
+    const abs = (u: string | null | undefined) => {
+      if (!u || u.startsWith("data:") || u.startsWith("blob:")) return null;
+      try {
+        return new URL(u, location.href).href;
+      } catch {
+        return null;
+      }
+    };
+
+    const add = (u: string | null | undefined) => {
+      const a = abs(u);
+      if (a && /^https?:/i.test(a)) found.add(a);
+    };
+
+    const walkFiber = (node: unknown, depth = 0): void => {
+      if (!node || depth > 12) return;
+      const n = node as Record<string, unknown>;
+      const props = (n.memoizedProps || n.pendingProps || {}) as Record<
+        string,
+        unknown
+      >;
+      for (const key of [
+        "src",
+        "url",
+        "source",
+        "file",
+        "signedUrl",
+        "displaySource",
+        "originalSource",
+      ]) {
+        const v = props[key];
+        if (typeof v === "string") add(v);
+        if (v && typeof v === "object") {
+          const o = v as Record<string, unknown>;
+          if (typeof o.url === "string") add(o.url);
+          if (typeof o.src === "string") add(o.src);
+          if (typeof o.signedUrl === "string") add(o.signedUrl);
+        }
+      }
+      // Notion file blocks often nest under props.blockValue.format
+      const bv = props.blockValue as Record<string, unknown> | undefined;
+      const format = (bv?.format || props.format) as
+        | Record<string, unknown>
+        | undefined;
+      if (format) {
+        for (const key of [
+          "display_source",
+          "source",
+          "file_ids",
+          "page_cover",
+        ]) {
+          const v = format[key];
+          if (typeof v === "string") add(v);
+        }
+      }
+      walkFiber(n.child, depth + 1);
+      walkFiber(n.sibling, depth + 1);
+    };
+
+    const fiberOf = (el: Element) => {
+      const key = Object.keys(el).find(
+        (k) =>
+          k.startsWith("__reactFiber$") ||
+          k.startsWith("__reactInternalInstance$"),
+      );
+      return key ? (el as unknown as Record<string, unknown>)[key] : null;
+    };
+
+    // Expand toggles first so nested media exists
+    for (const block of Array.from(
+      document.querySelectorAll(".notion-toggle-block"),
+    )) {
+      const btn =
+        block.querySelector("[role='button']") ||
+        block.querySelector(":scope > div");
+      if (btn) (btn as HTMLElement).click();
+    }
+    await delay(500);
+
+    const mediaBlocks = Array.from(
+      document.querySelectorAll(
+        ".notion-image-block, .notion-audio-block, .notion-video-block, .notion-file-block",
+      ),
+    ) as HTMLElement[];
+
+    for (const block of mediaBlocks) {
+      try {
+        block.scrollIntoView({ block: "center", inline: "nearest" });
+      } catch {
+        /* ignore */
+      }
+      await delay(200);
+
+      // Click to force Notion player / image mount
+      const hit =
+        block.querySelector("[role='button']") ||
+        block.querySelector("[role='figure']") ||
+        block;
+      try {
+        (hit as HTMLElement).click();
+      } catch {
+        /* ignore */
+      }
+      await delay(350);
+
+      // Pull URLs from React fiber
+      walkFiber(fiberOf(block));
+
+      // Collect whatever Notion mounted
+      for (const el of Array.from(
+        block.querySelectorAll("img[src], audio[src], source[src], video[src], a[href]"),
+      )) {
+        add(el.getAttribute("src"));
+        add(el.getAttribute("href"));
+      }
+    }
+
+    // Performance resource entries catch lazy loads we missed in DOM attrs
+    try {
+      for (const e of performance.getEntriesByType("resource")) {
+        const u = (e as PerformanceResourceTiming).name;
+        if (
+          /\/(image|file)\//i.test(u) ||
+          /file\.notion\.so/i.test(u) ||
+          /\.(mp3|m4a|png|jpe?g|webp|gif)(\?|$)/i.test(u)
+        ) {
+          add(u);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // Inject <img>/<audio> into still-empty figures using discovered URLs keyed by block id
+    const byBlock = new Map<string, string[]>();
+    for (const u of found) {
+      try {
+        const id = new URL(u).searchParams.get("id");
+        if (!id) continue;
+        const list = byBlock.get(id) || [];
+        list.push(u);
+        byBlock.set(id, list);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const pickBest = (urls: string[], kind: "image" | "audio") => {
+      const filtered = urls.filter((u) =>
+        kind === "audio"
+          ? /\.(mp3|m4a|ogg|wav)(\?|$)/i.test(u) || /file\.notion\.so/i.test(u)
+          : /\/image\//i.test(u) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(u),
+      );
+      if (!filtered.length) return null;
+      // Prefer largest width=
+      filtered.sort((a, b) => {
+        const wa = Number(new URL(a).searchParams.get("width") || 0);
+        const wb = Number(new URL(b).searchParams.get("width") || 0);
+        return wb - wa;
+      });
+      return filtered[0]!;
+    };
+
+    for (const block of mediaBlocks) {
+      const id = block.getAttribute("data-block-id") || "";
+      const urls = byBlock.get(id) || [];
+      const figure =
+        block.querySelector('[role="figure"]') ||
+        block.querySelector("[data-content-editable-void]") ||
+        block;
+
+      if (block.classList.contains("notion-image-block")) {
+        let img = block.querySelector("img") as HTMLImageElement | null;
+        const best = pickBest(urls, "image");
+        if (!img && best) {
+          img = document.createElement("img");
+          img.alt = "";
+          img.referrerPolicy = "same-origin";
+          img.style.display = "block";
+          img.style.width = "100%";
+          img.style.maxWidth = "100%";
+          img.style.height = "auto";
+          figure.appendChild(img);
+        }
+        if (img && best && (!img.src || img.src.startsWith("data:"))) {
+          img.src = best;
+        }
+        if (img) add(img.src);
+      }
+
+      if (block.classList.contains("notion-audio-block")) {
+        let audio = block.querySelector("audio") as HTMLAudioElement | null;
+        const matched = urls.find(
+          (u) =>
+            /\.(mp3|m4a|ogg|wav)(\?|$)/i.test(u) || /file\.notion\.so/i.test(u),
+        );
+        const src = matched || pickBest(urls, "audio");
+        if (!audio && src) {
+          audio = document.createElement("audio");
+          audio.controls = true;
+          audio.preload = "metadata";
+          audio.style.width = "100%";
+          audio.style.display = "block";
+          figure.appendChild(audio);
+        }
+        if (audio && src) {
+          audio.src = src;
+          add(src);
+        }
+      }
+    }
+
+    await delay(400);
+    return [...found];
+  });
+}
+
+/**
  * Prepare the painted Notion DOM for a static host:
  * keep header chrome, strip promo CTAs, fix fixed desktop widths,
  * leave scripts out (we inject our own offline runtime instead).
@@ -225,44 +452,6 @@ export async function freezeNotionPage(page: Page): Promise<string> {
     }
     await delay(400);
 
-    // Scroll the page so lazy images / audio players mount
-    const scroller =
-      (document.querySelector(".notion-frame .notion-scroller") as HTMLElement) ||
-      document.scrollingElement ||
-      document.body;
-    const maxY = Math.max(
-      scroller.scrollHeight,
-      document.body.scrollHeight,
-      document.documentElement.scrollHeight,
-    );
-    for (let y = 0; y < maxY; y += Math.max(400, window.innerHeight * 0.8)) {
-      if ("scrollTo" in scroller) {
-        (scroller as HTMLElement).scrollTo?.(0, y);
-      }
-      window.scrollTo(0, y);
-      await delay(120);
-    }
-    window.scrollTo(0, 0);
-    if ("scrollTo" in scroller) (scroller as HTMLElement).scrollTo?.(0, 0);
-    await delay(300);
-
-    // Click audio blocks to force Notion to fetch signed media URLs
-    for (const block of Array.from(
-      document.querySelectorAll(".notion-audio-block"),
-    )) {
-      const hit =
-        block.querySelector("[role='button']") ||
-        block.querySelector("[role='figure']") ||
-        block;
-      try {
-        (hit as HTMLElement).click();
-      } catch {
-        /* ignore */
-      }
-      await delay(250);
-    }
-    await delay(800);
-
     for (const img of Array.from(document.querySelectorAll("img"))) {
       const el = img as HTMLImageElement;
       const ds =
@@ -283,14 +472,7 @@ export async function freezeNotionPage(page: Page): Promise<string> {
         const last = candidates[candidates.length - 1];
         if (last) el.setAttribute("src", last);
       }
-      // Nudge lazy loaders by scrolling the image into view
-      try {
-        el.scrollIntoView({ block: "nearest", inline: "nearest" });
-      } catch {
-        /* ignore */
-      }
     }
-    await delay(600);
 
     const absAttr = (el: Element, attr: string) => {
       const v = el.getAttribute(attr);

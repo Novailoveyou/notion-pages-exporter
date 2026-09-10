@@ -39,6 +39,7 @@ import { writePwaAssets } from "./pwa.ts";
 import {
   captureCollectionViews,
   freezeNotionPage,
+  hydrateNotionMedia,
 } from "./snapshot.ts";
 import {
   fail,
@@ -549,15 +550,21 @@ async function scrapeOnePage(
   updateSpinner(label, "views");
   const collectionViews = await captureCollectionViews(page).catch(() => []);
 
-  collector.detach();
+  // Force-load lazy image/audio while the response collector is still attached
+  setPhase("assets", `${label} · media`);
+  updateSpinner(label, "assets");
+  const hydratedMedia = await hydrateNotionMedia(page).catch(() => [] as string[]);
 
   const domAssets = await collectDomAssetUrls(page);
-  setPhase("assets", label);
-  updateSpinner(label, "assets");
   await withStoreLock(async () => {
     await saveCollectedResponses(store, collector.responses);
-    await downloadAssetUrls(store, page, [...collector.urls, ...domAssets]);
+    await downloadAssetUrls(store, page, [
+      ...collector.urls,
+      ...domAssets,
+      ...hydratedMedia,
+    ]);
   });
+  collector.detach();
 
   setPhase("links", label);
   const links = await collectSameSiteLinks(page, url);

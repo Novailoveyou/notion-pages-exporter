@@ -948,7 +948,7 @@ export const RUNTIME_JS = `(() => {
     return entry && entry[kind] ? entry[kind] : null;
   }
 
-  /** Fix gif placeholders / empty audio using ?id=<block> assets from cache. */
+  /** Fix gif placeholders / empty audio+image figures using ?id=<block> assets. */
   function repairBlockMedia(scope) {
     const root = scope || document;
     if (!assetMap) return;
@@ -957,12 +957,25 @@ export const RUNTIME_JS = `(() => {
     for (const block of $$(".notion-image-block[data-block-id]", root)) {
       const local = localAssetForBlock(block.getAttribute("data-block-id"), "image");
       if (!local) continue;
-      for (const img of $$("img", block)) {
-        const src = img.getAttribute("src") || "";
-        if (!src || /^data:image\\/(gif|svg)/i.test(src) || /^https?:/i.test(src)) {
-          img.setAttribute("src", local);
-          img.removeAttribute("srcset");
-        }
+      let img = block.querySelector("img");
+      if (!img) {
+        const figure =
+          block.querySelector('[role="figure"]') ||
+          block.querySelector("[data-content-editable-void]") ||
+          block;
+        img = document.createElement("img");
+        img.alt = "";
+        img.referrerPolicy = "same-origin";
+        img.style.display = "block";
+        img.style.width = "100%";
+        img.style.maxWidth = "100%";
+        img.style.height = "auto";
+        figure.appendChild(img);
+      }
+      const src = img.getAttribute("src") || "";
+      if (!src || /^data:image\\/(gif|svg)/i.test(src) || /^https?:/i.test(src)) {
+        img.setAttribute("src", local);
+        img.removeAttribute("srcset");
       }
     }
 

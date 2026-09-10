@@ -1,10 +1,13 @@
+import readline from "node:readline";
+
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
-/** Light blue for live status */
-const CYAN = "\x1b[96m";
+const CYAN = "\x1b[96m"; // progress
+const GRAY = "\x1b[90m"; // path
+const WHITE = "\x1b[97m"; // hint
 const BOLD = "\x1b[1m";
 
 export const c = {
@@ -16,10 +19,17 @@ export const c = {
   bold: (s: string) => `${BOLD}${s}${RESET}`,
 };
 
-/** stderr — keeps console.log on stdout from breaking in-place updates */
-const out = process.stderr;
+/** Prefer stdout — same stream as console.log so cursor math stays consistent */
+const out = process.stdout;
 const isCi = Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
 const canSpin = Boolean(out.isTTY) && !isCi;
+
+/**
+ * Prefer a true 3-line status block.
+ * Set NSP_STATUS_SINGLE=1 only if your terminal can't do cursor-up cleanly.
+ */
+const forceSingle = process.env.NSP_STATUS_SINGLE === "1";
+const ideTerminal = forceSingle;
 
 const STATUS_LINES = 3;
 
@@ -53,7 +63,7 @@ export function fail(msg: string): void {
 export function note(msg: string): void {
   if (spinWanted) {
     spinFlavor = msg;
-    paintStatus();
+    paintStatus(true);
     return;
   }
   pauseStatus();
@@ -121,6 +131,7 @@ let lastCiDone = -1;
 let lastCiAt = 0;
 let lastPaintAt = 0;
 let lastPaintKey = "";
+let painting = false;
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -128,7 +139,7 @@ function stripAnsi(s: string): string {
 
 function termCols(): number {
   const n = out.columns || process.stdout.columns || 80;
-  return Math.max(48, Math.min(n, 120));
+  return Math.max(40, Math.min(n, 100));
 }
 
 function truncate(label: string, max: number): string {
@@ -138,11 +149,12 @@ function truncate(label: string, max: number): string {
   return `${label.slice(0, Math.max(0, max - 1))}…`;
 }
 
-function fit(text: string): string {
-  return truncate(text, termCols() - 1);
+function fitExact(text: string, width: number): string {
+  const t = truncate(text, width);
+  return t + " ".repeat(Math.max(0, width - t.length));
 }
 
-function progressBar(done: number, total: number, width = 18): string {
+function progressBar(done: number, total: number, width = 16): string {
   const t = Math.max(total, done, 1);
   const ratio = Math.min(1, done / t);
   const filled = Math.round(ratio * width);
@@ -164,40 +176,50 @@ function pickFlavor(phase: string): string {
   return list[Math.floor(Math.random() * list.length)]!;
 }
 
-/**
- * Exactly three lines:
- *   1) spinner + bar + counts
- *   2) file path
- *   3) hint text
- */
-function composeRows(frame: string): [string, string, string] {
+function composePlain(frame: string): {
+  progress: string;
+  path: string;
+  hint: string;
+} {
   const total = estimateTotal();
   const bar = progressBar(progress.done, total);
   const counts = `${progress.done}/${total}`;
-  const extra = progress.skipped > 0 ? ` · ${progress.skipped} cached` : "";
-  const active = progress.active > 0 ? ` · ${progress.active} active` : "";
+  const bits: string[] = [];
+  if (progress.skipped > 0) bits.push(`${progress.skipped} cached`);
+  if (progress.active > 0) bits.push(`${progress.active} active`);
+  const meta = bits.length ? `  ·  ${bits.join("  ·  ")}` : "";
 
-  return [
-    fit(`${frame} ${bar} ${counts}${extra}${active}`),
-    fit(spinLabel || "…"),
-    fit(spinFlavor || pickFlavor(spinPhase)),
-  ];
+  return {
+    progress: `${frame}  ${bar}  ${counts}${meta}`,
+    path: spinLabel || "…",
+    hint: spinFlavor || pickFlavor(spinPhase),
+  };
 }
 
-/** Clear `count` lines upward from the current cursor (log-update style). */
-function eraseLines(count: number): string {
-  if (count <= 0) return "";
-  let s = "";
-  for (let i = 0; i < count; i++) {
-    s += "\x1b[2K";
-    if (i < count - 1) s += "\x1b[1A";
+function eraseLines(count: number): void {
+  if (count <= 0 || !out.isTTY) return;
+  try {
+    for (let i = 0; i < count; i++) {
+      readline.clearLine(out, 0);
+      readline.cursorTo(out, 0);
+      if (i < count - 1) readline.moveCursor(out, 0, -1);
+    }
+  } catch {
+    let seq = "";
+    for (let i = 0; i < count; i++) {
+      seq += "\x1b[2K";
+      if (i < count - 1) seq += "\x1b[1A";
+    }
+    out.write(`${seq}\r`);
   }
-  return `${s}\r`;
 }
 
 function pauseStatus(): void {
   if (!statusDirty) return;
-  if (out.isTTY) out.write(eraseLines(STATUS_LINES));
+  if (out.isTTY) {
+    if (ideTerminal) out.write("\r\x1b[2K");
+    else eraseLines(STATUS_LINES);
+  }
   statusDirty = false;
   lastPaintKey = "";
 }
@@ -206,52 +228,81 @@ function resumeStatus(): void {
   if (spinWanted) paintStatus(true);
 }
 
-function writeStatus(rows: [string, string, string]): void {
-  if (statusDirty) out.write(eraseLines(STATUS_LINES));
-  // No trailing newline after the last row — cursor stays on line 3
+/** 3-line block for real terminals — never wraps (exact width). */
+function writeMulti(parts: { progress: string; path: string; hint: string }): void {
+  const w = termCols() - 1;
+  const r1 = fitExact(parts.progress, w);
+  const r2 = fitExact(`  ${parts.path}`, w);
+  const r3 = fitExact(`  ${parts.hint}`, w);
+  if (statusDirty) eraseLines(STATUS_LINES);
   out.write(
-    `${CYAN}${rows[0]}${RESET}\n` +
-      `${CYAN}${rows[1]}${RESET}\n` +
-      `${CYAN}${rows[2]}${RESET}`,
+    `${CYAN}${r1}${RESET}\n` + `${GRAY}${r2}${RESET}\n` + `${WHITE}${r3}${RESET}`,
   );
   statusDirty = true;
 }
 
+/**
+ * IDE-safe: one \\r line, same info + colors (cyan / gray / white).
+ * This is the only in-place mode that never spams in Cursor.
+ */
+function writeSingle(parts: { progress: string; path: string; hint: string }): void {
+  const w = termCols() - 1;
+  // Budget widths: progress gets priority, then path, then hint
+  const progress = truncate(parts.progress, Math.min(42, Math.floor(w * 0.45)));
+  const rest = w - stripAnsi(progress).length - 6;
+  const pathW = Math.max(8, Math.floor(rest * 0.55));
+  const hintW = Math.max(8, rest - pathW);
+  const path = truncate(parts.path, pathW);
+  const hint = truncate(parts.hint, hintW);
+  const line =
+    `${CYAN}${progress}${RESET}` +
+    `  ${GRAY}${path}${RESET}` +
+    `  ${WHITE}${hint}${RESET}`;
+  out.write(`\r\x1b[2K${line}`);
+  statusDirty = true;
+}
+
 function paintStatus(force = false): void {
-  if (!spinWanted) return;
+  if (!spinWanted || painting) return;
+  painting = true;
+  try {
+    const now = Date.now();
+    if (!force && canSpin && now - lastPaintAt < 120) return;
 
-  const now = Date.now();
-  if (!force && canSpin && now - lastPaintAt < 120) return;
+    const frame = canSpin ? FRAMES[frameIdx % FRAMES.length]! : "·";
+    const parts = composePlain(frame);
+    const key = `${parts.progress}\n${parts.path}\n${parts.hint}`;
 
-  const frame = canSpin ? FRAMES[frameIdx % FRAMES.length]! : "…";
-  const rows = composeRows(frame);
-  const key = rows.join("\n");
+    if (out.isTTY && !isCi) {
+      if (!force && key === lastPaintKey) return;
+      if (ideTerminal) writeSingle(parts);
+      else writeMulti(parts);
+      lastPaintAt = now;
+      lastPaintKey = key;
+      return;
+    }
 
-  if (out.isTTY && !isCi) {
-    if (!force && key === lastPaintKey) return;
-    writeStatus(rows);
-    lastPaintAt = now;
-    lastPaintKey = key;
-    return;
-  }
-
-  if (progress.done !== lastCiDone || now - lastCiAt > 30_000) {
-    lastCiDone = progress.done;
-    lastCiAt = now;
-    lastPaintAt = now;
-    console.error(rows.join("\n"));
+    if (progress.done !== lastCiDone || now - lastCiAt > 30_000) {
+      lastCiDone = progress.done;
+      lastCiAt = now;
+      lastPaintAt = now;
+      console.error(`${parts.progress}\n${parts.path}\n${parts.hint}`);
+    }
+  } finally {
+    painting = false;
   }
 }
 
 function ensureTimers(): void {
   if (!canSpin) return;
+  // Slow spinner — frequent redraws are what look like spam when erase glitches
   if (!frameTimer) {
     frameTimer = setInterval(() => {
       if (!spinWanted) return;
       frameIdx = (frameIdx + 1) % FRAMES.length;
       lastPaintKey = "";
       paintStatus(true);
-    }, 140);
+    }, ideTerminal ? 450 : 280);
     frameTimer.unref?.();
   }
   if (!flavorTimer) {
@@ -259,7 +310,7 @@ function ensureTimers(): void {
       if (!spinWanted) return;
       spinFlavor = pickFlavor(spinPhase);
       paintStatus(true);
-    }, 2500);
+    }, 3000);
     flavorTimer.unref?.();
   }
 }
@@ -295,7 +346,7 @@ export function setPhase(phase: string, label?: string): void {
   spinPhase = phase || "idle";
   if (label) spinLabel = label;
   if (phaseChanged) spinFlavor = pickFlavor(spinPhase);
-  if (spinWanted) paintStatus();
+  if (spinWanted) paintStatus(true);
 }
 
 export function startSpinner(label: string, phase = "idle"): void {
