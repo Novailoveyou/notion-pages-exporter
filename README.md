@@ -21,7 +21,34 @@ bunx notion-static-parser sync \
   --out ./_site
 ```
 
-## Install / run
+## Publishing
+
+Publish this package to npm so Pages repos can call it from GitHub Actions:
+
+```bash
+# one-time: login to npm (browser or token)
+npm login
+# or: npm config set //registry.npmjs.org/:_authToken=npm_…
+
+bun run build
+bun run publish:prod   # → bun publish --access public
+```
+
+That publishes `notion-static-parser` (version from `package.json`). After that,
+anywhere can run:
+
+```bash
+npx notion-static-parser sync --url "…" --out .
+# or
+bunx notion-static-parser sync --url "…" --out .
+```
+
+Bump `version` in `package.json` before each publish if the previous version is
+already on the registry.
+
+## Usage
+
+### Install / run locally
 
 ```bash
 bunx notion-static-parser sync --url "https://….notion.site/…" --out ./_site
@@ -43,6 +70,75 @@ Optional config `notion-static-parser.config.json`:
 ```bash
 bunx notion-static-parser init-config
 ```
+
+### Wire each GitHub Pages repo
+
+Use the ready template: [`examples/sync-notion.yml`](examples/sync-notion.yml).
+
+#### [elementary.english.orlov.app](https://github.com/Novailoveyou/elementary.english.orlov.app)
+
+1. Add `.github/workflows/sync-notion.yml` (copy from the example).
+2. Repo **Settings → Secrets and variables → Actions → Variables**:
+   - `NOTION_URL` = `https://almond-brownie-c82.notion.site/Elementary-3b515e0e4a098053bb74c985cebfd777`
+3. Ensure **GitHub Pages** serves from `main` (root or `/docs` — whatever you use now).
+4. Keep existing `CNAME` — the workflow uses `--keep-cname`.
+5. Remove / stop the old `publish.yml` (notion4ever + `NOTION_TOKEN`) so you don’t have two deployers fighting.
+
+#### [english.orlov.app](https://github.com/Novailoveyou/english.orlov.app)
+
+Same workflow file, different variable:
+
+- `NOTION_URL` = `https://almond-brownie-c82.notion.site/Elena-Pilip-61ff5f4c44a34429944ea190ee690cc9`  
+  (drop the `#…` hash for the crawl root)
+
+No Notion API token needed — public `*.notion.site` only.
+
+### What the Action does
+
+On schedule (every 4h in the example) or **Actions → Sync Notion → Run workflow**:
+
+1. Checkout the Pages repo
+2. Install Chrome + Bun
+3. Cache Chrome profile (Cloudflare cookies)
+4. `bunx notion-static-parser sync --url "$NOTION_URL" --out . --keep-cname …`
+5. Commit & push if anything changed → Pages updates
+
+The workflow also:
+
+- Points Puppeteer at Chrome via `PUPPETEER_EXECUTABLE_PATH`
+- Runs headless with container-safe flags (`--no-sandbox`, `--disable-dev-shm-usage`, …)
+- Uses lower concurrency (`2`) to fit runner memory
+
+Local override for a custom Chrome binary:
+
+```bash
+PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome \
+  bunx notion-static-parser sync --url "…" --out ./_site
+```
+
+### Trigger from this machine
+
+After the workflow exists:
+
+```bash
+export GITHUB_TOKEN=ghp_…   # workflow scope
+bunx notion-static-parser trigger \
+  --repo Novailoveyou/elementary.english.orlov.app \
+  --workflow sync-notion.yml \
+  --ref main
+```
+
+Same for `english.orlov.app`.
+
+### Order of operations
+
+| Step | Where |
+|------|--------|
+| 1. `bun run publish:prod` | `notion-static-parser` |
+| 2. Add workflow + `NOTION_URL` | each Pages repo |
+| 3. Disable old notion4ever `publish.yml` | each Pages repo |
+| 4. Manual “Run workflow” once | verify scrape + commit |
+| 5. Leave schedule on | ongoing sync |
 
 ## Commands
 
@@ -75,38 +171,6 @@ the live `--out` is left untouched.
 
 ```bash
 bunx notion-static-parser restore --out ./_site
-```
-
-### Trigger
-
-```bash
-export GITHUB_TOKEN=ghp_…
-bunx notion-static-parser trigger \
-  --repo Novailoveyou/elementary.english.orlov.app \
-  --workflow sync-notion.yml \
-  --ref main
-```
-
-## GitHub Actions (Linux container)
-
-Copy [examples/sync-notion.yml](examples/sync-notion.yml) to
-`.github/workflows/sync-notion.yml` in your Pages repo.
-
-The workflow:
-
-1. Installs **Google Chrome** on `ubuntu-latest`
-2. Points Puppeteer at it via `PUPPETEER_EXECUTABLE_PATH`
-3. Caches `~/.notion-static-parser/chrome-profile` for Cloudflare cookies
-4. Runs headless with container-safe flags (`--no-sandbox`, `--disable-dev-shm-usage`, …)
-5. Uses lower concurrency (`2`) to fit runner memory
-
-Set repository variable `NOTION_URL` to your public site root. No Notion secrets.
-
-Local override for a custom Chrome binary:
-
-```bash
-PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome \
-  bunx notion-static-parser sync --url "…" --out ./_site
 ```
 
 ## Cloudflare
