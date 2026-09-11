@@ -95,7 +95,7 @@ export function writePwaAssets(
 
 /** Service worker: precache on install, cache-first for same-origin, network fallback. */
 const SERVICE_WORKER_JS = `/* nsp service worker */
-const CACHE = "nsp-static-v3";
+const CACHE = "nsp-static-v4";
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {

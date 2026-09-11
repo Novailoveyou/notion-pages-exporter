@@ -14,92 +14,20 @@ export type CollectionViewCapture = {
 export async function captureCollectionViews(
   page: Page,
 ): Promise<CollectionViewCapture[]> {
-  return page.evaluate(async () => {
-    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  type CapturePlan = {
+    blockId: string;
+    tabLabels: string[];
+    defaultIndex: number;
+    defaultLabel: string;
+  };
 
-    const promoteMedia = (root: ParentNode) => {
-      for (const img of Array.from(root.querySelectorAll("img"))) {
-        const el = img as HTMLImageElement;
-        const ds =
-          el.getAttribute("data-src") ||
-          el.getAttribute("data-lazy-src") ||
-          el.getAttribute("data-original");
-        const src = el.getAttribute("src") || "";
-        if (
-          ds &&
-          (!src ||
-            src.startsWith("data:image/svg") ||
-            src.startsWith("data:image/gif"))
-        ) {
-          el.setAttribute("src", ds);
-        }
-        const srcset = el.getAttribute("srcset");
-        if (srcset) {
-          const candidates = srcset
-            .split(",")
-            .map((p) => p.trim().split(/\s+/)[0]!);
-          const last = candidates[candidates.length - 1];
-          if (last) el.setAttribute("src", last);
-        }
-        const cur = el.getAttribute("src");
-        if (cur && !cur.startsWith("data:") && !cur.startsWith("blob:")) {
-          try {
-            el.setAttribute("src", new URL(cur, location.href).href);
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-      for (const el of Array.from(
-        root.querySelectorAll("a[href], audio[src], source[src], video[src]"),
-      )) {
-        for (const attr of ["href", "src"] as const) {
-          const v = el.getAttribute(attr);
-          if (!v || v.startsWith("#") || v.startsWith("data:") || v.startsWith("blob:"))
-            continue;
-          try {
-            el.setAttribute(attr, new URL(v, location.href).href);
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-    };
-
-    const waitImages = async (root: ParentNode) => {
-      const imgs = Array.from(root.querySelectorAll("img")).filter((img) => {
-        const s = img.getAttribute("src") || "";
-        return s.startsWith("http");
-      }) as HTMLImageElement[];
-      await Promise.all(
-        imgs.map(
-          (img) =>
-            new Promise<void>((resolve) => {
-              if (img.complete && img.naturalWidth > 0) return resolve();
-              const done = () => resolve();
-              img.addEventListener("load", done, { once: true });
-              img.addEventListener("error", done, { once: true });
-              setTimeout(done, 2500);
-            }),
-        ),
-      );
-    };
-
-    const out: {
-      blockId: string;
-      defaultLabel?: string;
-      defaultIndex?: number;
-      tabs: { label: string; html: string }[];
-    }[] = [];
-
+  const plans = await page.evaluate((): CapturePlan[] => {
     const blocks = Array.from(
       document.querySelectorAll(
         ".notion-collection_view-block[data-block-id], .notion-collection_view_page-block[data-block-id]",
       ),
     ) as HTMLElement[];
 
-    // Prefer the instance that actually hosts the tablist — Notion duplicates
-    // the same data-block-id on nested shells that have no tabs.
     const byId = new Map<string, HTMLElement[]>();
     for (const block of blocks) {
       const blockId = block.getAttribute("data-block-id") || "";
@@ -109,6 +37,7 @@ export async function captureCollectionViews(
       byId.set(blockId, list);
     }
 
+    const out: CapturePlan[] = [];
     for (const [blockId, instances] of byId) {
       let root: HTMLElement | null = null;
       for (const block of instances) {
@@ -125,7 +54,6 @@ export async function captureCollectionViews(
       const tablist = root.querySelector('[role="tablist"]');
       if (!tablist) continue;
 
-      // Prefer outer tab buttons — inner [role=tab] often opens a settings dialog
       const rawTabs = Array.from(
         tablist.querySelectorAll(
           ".notion-collection-view-tab-button, [role='tab'], .notion-collection-view-tab",
@@ -141,91 +69,206 @@ export async function captureCollectionViews(
       }
       if (tabs.length < 1) continue;
 
-      const defaultIndex = Math.max(
-        0,
-        tabs.findIndex((t) => /gallery/i.test(t.textContent || "")),
+      let defaultIndex = tabs.findIndex((t) =>
+        /gallery/i.test(t.textContent || ""),
       );
+      if (defaultIndex < 0) {
+        defaultIndex = tabs.findIndex(
+          (t) =>
+            t.getAttribute("aria-selected") === "true" ||
+            !!t.querySelector('[aria-selected="true"]'),
+        );
+      }
+      if (defaultIndex < 0) defaultIndex = 0;
+
       const defaultLabel =
         (tabs[defaultIndex]?.textContent || "").replace(/\s+/g, " ").trim() ||
-        "Gallery view";
+        "View";
 
-      const captured: { label: string; html: string }[] = [];
-      for (const tab of tabs) {
-        const label =
-          (tab.getAttribute("aria-label") || "")
-            .replace(/\s+/g, " ")
-            .trim() ||
-          (tab.textContent || "").replace(/\s+/g, " ").trim() ||
-          "View";
-        // Prefer real pointer activation — Notion sometimes ignores .click()
-        tab.dispatchEvent(
-          new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
-        );
-        tab.dispatchEvent(
-          new PointerEvent("pointerup", { bubbles: true, cancelable: true }),
-        );
-        tab.click();
-        // Dismiss view-settings popover if the click opened one
-        const esc = new KeyboardEvent("keydown", {
-          key: "Escape",
-          bubbles: true,
-        });
-        document.dispatchEvent(esc);
-        const wait = /calendar|table|board|timeline/i.test(label) ? 2200 : 1100;
-        await delay(wait);
-
-        const expectSel = /calendar/i.test(label)
-          ? ".notion-calendar-view"
-          : /table/i.test(label)
-            ? ".notion-table-view"
-            : /board/i.test(label)
-              ? ".notion-board-view"
-              : /list/i.test(label)
-                ? ".notion-list-view"
-                : /gallery/i.test(label)
-                  ? ".notion-gallery-view"
-                  : null;
-        if (expectSel) {
-          for (let i = 0; i < 8; i++) {
-            if (root.querySelector(expectSel)) break;
-            tab.click();
-            document.dispatchEvent(esc);
-            await delay(400);
-          }
-        }
-
-        const body = root.querySelector(".notion-collection-view-body");
-        if (body) {
-          promoteMedia(body);
-          await waitImages(body);
-          await delay(200);
-          promoteMedia(body);
-          captured.push({ label, html: body.innerHTML });
-        }
-      }
-
-      // Restore default Gallery view so freeze/scrape sees the preferred tab
-      if (tabs[defaultIndex]) {
-        tabs[defaultIndex]!.click();
-        await delay(500);
-        const body = root.querySelector(".notion-collection-view-body");
-        if (body) {
-          promoteMedia(body);
-          await waitImages(body);
-        }
-      }
-
-      if (captured.length) {
-        out.push({
-          blockId,
-          defaultLabel,
-          defaultIndex,
-          tabs: captured,
-        });
-      }
+      out.push({
+        blockId,
+        tabLabels: tabs.map(
+          (t) =>
+            (t.getAttribute("aria-label") || t.textContent || "View")
+              .replace(/\s+/g, " ")
+              .trim(),
+        ),
+        defaultIndex,
+        defaultLabel,
+      });
     }
     return out;
   });
+
+  const out: CollectionViewCapture[] = [];
+
+  for (const plan of plans) {
+    const captured: { label: string; html: string }[] = [];
+
+    for (let i = 0; i < plan.tabLabels.length; i++) {
+      const label = plan.tabLabels[i] || "View";
+
+      const handles = await page.$$(
+        `[data-block-id="${plan.blockId}"] [role="tablist"] .notion-collection-view-tab-button`,
+      );
+      let handle = handles[i] || null;
+      if (!handle) {
+        const alt = await page.$$(
+          `[data-block-id="${plan.blockId}"] [role="tablist"] [role="tab"]`,
+        );
+        handle = alt[i] || null;
+      }
+      if (handle) {
+        try {
+          await handle.evaluate((el) => {
+            try {
+              (el as HTMLElement).scrollIntoView({
+                block: "nearest",
+                inline: "nearest",
+              });
+            } catch {
+              /* ignore */
+            }
+          });
+          await handle.click({ delay: 30 });
+        } catch {
+          await page.evaluate(
+            (blockId, index) => {
+              const tablist = document.querySelector(
+                `[data-block-id="${blockId}"] [role="tablist"]`,
+              );
+              if (!tablist) return;
+              const tabs = Array.from(
+                tablist.querySelectorAll(".notion-collection-view-tab-button"),
+              ) as HTMLElement[];
+              const tab =
+                tabs[index] ||
+                (
+                  Array.from(
+                    tablist.querySelectorAll('[role="tab"]'),
+                  ) as HTMLElement[]
+                )[index];
+              tab?.click();
+            },
+            plan.blockId,
+            i,
+          );
+        }
+      }
+      for (const h of handles) await h.dispose().catch(() => {});
+
+      await page.keyboard.press("Escape").catch(() => {});
+      const waitMs = /calendar|table|board|timeline/i.test(label) ? 2400 : 1200;
+      await new Promise((r) => setTimeout(r, waitMs));
+
+      const expectSel = /calendar/i.test(label)
+        ? ".notion-calendar-view"
+        : /table/i.test(label)
+          ? ".notion-table-view"
+          : /board/i.test(label)
+            ? ".notion-board-view"
+            : /list/i.test(label)
+              ? ".notion-list-view"
+              : /gallery/i.test(label)
+                ? ".notion-gallery-view"
+                : null;
+      if (expectSel) {
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const ready = await page.evaluate(
+            (blockId, sel) => {
+              const roots = Array.from(
+                document.querySelectorAll(`[data-block-id="${blockId}"]`),
+              );
+              return roots.some((root) => !!root.querySelector(sel));
+            },
+            plan.blockId,
+            expectSel,
+          );
+          if (ready) break;
+          const retry = await page.$$(
+            `[data-block-id="${plan.blockId}"] [role="tablist"] .notion-collection-view-tab-button`,
+          );
+          if (retry[i]) {
+            await retry[i]!.click({ delay: 20 }).catch(() => {});
+          }
+          for (const h of retry) await h.dispose().catch(() => {});
+          await page.keyboard.press("Escape").catch(() => {});
+          await new Promise((r) => setTimeout(r, 450));
+        }
+      }
+
+      const html = await page.evaluate((blockId) => {
+        const roots = Array.from(
+          document.querySelectorAll(`[data-block-id="${blockId}"]`),
+        ) as HTMLElement[];
+        const root =
+          roots.find((r) =>
+            r.querySelector(
+              ".notion-collection-view-body, .notion-calendar-view, .notion-table-view, .notion-gallery-view",
+            ),
+          ) || roots[0];
+        if (!root) return "";
+        const body =
+          root.querySelector(".notion-collection-view-body") ||
+          root.querySelector(".notion-scroller.horizontal") ||
+          root.querySelector(
+            ".notion-calendar-view, .notion-table-view, .notion-gallery-view, .notion-board-view, .notion-list-view",
+          )?.parentElement;
+        if (!body) return "";
+
+        for (const img of Array.from(body.querySelectorAll("img"))) {
+          const el = img as HTMLImageElement;
+          const ds =
+            el.getAttribute("data-src") ||
+            el.getAttribute("data-lazy-src") ||
+            el.getAttribute("data-original");
+          const src = el.getAttribute("src") || "";
+          if (
+            ds &&
+            (!src ||
+              src.startsWith("data:image/svg") ||
+              src.startsWith("data:image/gif"))
+          ) {
+            el.setAttribute("src", ds);
+          }
+          const cur = el.getAttribute("src");
+          if (cur && !cur.startsWith("data:") && !cur.startsWith("blob:")) {
+            try {
+              el.setAttribute("src", new URL(cur, location.href).href);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+        return body.innerHTML;
+      }, plan.blockId);
+
+      if (html && html.length > 40) {
+        captured.push({ label, html });
+      }
+    }
+
+    const defHandles = await page.$$(
+      `[data-block-id="${plan.blockId}"] [role="tablist"] .notion-collection-view-tab-button`,
+    );
+    const def = defHandles[plan.defaultIndex];
+    if (def) {
+      await def.click({ delay: 20 }).catch(() => {});
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    for (const h of defHandles) await h.dispose().catch(() => {});
+
+    if (captured.length) {
+      out.push({
+        blockId: plan.blockId,
+        defaultLabel: plan.defaultLabel,
+        defaultIndex: plan.defaultIndex,
+        tabs: captured,
+      });
+    }
+  }
+
+  return out;
 }
 
 /**
@@ -674,30 +717,31 @@ export async function freezeNotionPage(page: Page): Promise<string> {
       if (btn) {
         btn.setAttribute("aria-expanded", "false");
         btn.setAttribute("aria-label", "Open");
+        const svg = btn.querySelector("svg") as SVGElement | null;
+        if (svg) {
+          svg.style.transform = "rotateZ(-90deg)";
+          svg.style.fill = "currentColor";
+        }
       }
 
       const contentNodes: HTMLElement[] = [];
-      const kids = Array.from(el.children) as HTMLElement[];
-      // Notion usually: [headerRow, ...contentBlocks]
-      if (kids.length >= 2) {
-        for (let i = 1; i < kids.length; i++) contentNodes.push(kids[i]!);
+      for (const child of Array.from(
+        el.querySelectorAll(".notion-selectable"),
+      ) as HTMLElement[]) {
+        if (child === el) continue;
+        if (child.classList.contains("notion-toggle-block")) continue;
+        if (child.closest(".notion-toggle-block") !== el) continue;
+        contentNodes.push(child);
       }
-      // Or a single wrapper whose children after the first are content
-      if (!contentNodes.length && kids[0]) {
-        const inner = Array.from(kids[0].children) as HTMLElement[];
-        for (let i = 1; i < inner.length; i++) contentNodes.push(inner[i]!);
-      }
-      // Nested blocks that are siblings of the header flex row
       if (!contentNodes.length) {
-        for (const child of Array.from(
-          el.querySelectorAll(":scope > div > .notion-selectable, :scope > .notion-selectable"),
-        ) as HTMLElement[]) {
-          if (child.querySelector('[role="button"][aria-label]')) continue;
-          if (child.closest(".notion-list-item-box-left")) continue;
-          // Skip the header chrome that contains the title leaf
-          if (child.querySelector("[data-content-editable-leaf]")) continue;
-          contentNodes.push(child);
+        const kids = Array.from(el.children) as HTMLElement[];
+        if (kids.length >= 2) {
+          for (let i = 1; i < kids.length; i++) contentNodes.push(kids[i]!);
         }
+      }
+      if (!contentNodes.length && el.children[0]) {
+        const inner = Array.from(el.children[0]!.children) as HTMLElement[];
+        for (let i = 1; i < inner.length; i++) contentNodes.push(inner[i]!);
       }
 
       for (const node of contentNodes) {

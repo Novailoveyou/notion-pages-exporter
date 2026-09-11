@@ -602,10 +602,25 @@ export const RUNTIME_JS = `(() => {
   }
 
   function wireViewTabs(root, views) {
-    if (!views || !views.tabs || !views.tabs.length) return;
     const tabs = collectionTabs(root);
-    const body = root.querySelector(".notion-collection-view-body");
-    if (!body || !tabs.length) return;
+    const body =
+      root.querySelector(".notion-collection-view-body") ||
+      root.querySelector(".notion-scroller.notion-collection-view-body") ||
+      root.querySelector(".notion-scroller.vertical.horizontal");
+    if (!tabs.length) return;
+
+    // Always make tabs look/feel clickable (even before captures exist)
+    for (const tab of tabs) {
+      tab.style.cursor = "pointer";
+      tab.style.pointerEvents = "auto";
+      const inner = tab.querySelector('[role="tab"], .notion-collection-view-tab');
+      if (inner) {
+        inner.style.cursor = "pointer";
+        inner.style.pointerEvents = "auto";
+      }
+    }
+
+    if (!views || !views.tabs || !views.tabs.length || !body) return;
 
     const def = defaultTabIndex(views, tabs);
     // Apply default view on load
@@ -614,10 +629,10 @@ export const RUNTIME_JS = `(() => {
     tabs.forEach((tab, i) => {
       if (tab.dataset.nspWired) return;
       tab.dataset.nspWired = "1";
-      tab.style.cursor = "pointer";
       tab.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
         const selected = tab.getAttribute("aria-selected") === "true" ||
           tab.querySelector('[aria-selected="true"]');
         // Clicking an already-selected non-default tab returns to Gallery view
@@ -626,7 +641,7 @@ export const RUNTIME_JS = `(() => {
           return;
         }
         applyView(root, views, tabs, body, i);
-      });
+      }, true);
     });
   }
 
@@ -654,15 +669,39 @@ export const RUNTIME_JS = `(() => {
     for (const block of $$(".notion-toggle-block", scope || document)) {
       if (block.dataset.nspToggleWired) continue;
       block.dataset.nspToggleWired = "1";
-      const header =
+      const btn =
         block.querySelector(":scope [role='button']") ||
-        block.querySelector(":scope > div > div[role='button']") ||
-        block.querySelector(":scope > div");
-      if (!header) continue;
+        block.querySelector(":scope > div > div[role='button']");
+      const title = block.querySelector("[data-content-editable-leaf]");
+      if (!btn && !title) continue;
 
       const contentNodes = () => {
         const marked = $$("[data-nsp-toggle-content]", block);
         if (marked.length) return marked;
+
+        // Nested Notion body: .notion-selectable blocks that belong to THIS toggle
+        const nested = $$(".notion-selectable", block).filter((el) => {
+          if (el === block) return false;
+          if (el.classList.contains("notion-toggle-block")) return false;
+          return el.closest(".notion-toggle-block") === block;
+        });
+        if (nested.length) return nested;
+
+        // Sibling of the title row (Script / STUDENT A layout)
+        if (title) {
+          let row = title.parentElement;
+          while (row && row !== block) {
+            const parent = row.parentElement;
+            if (parent && parent.children.length >= 2) {
+              const body = Array.from(parent.children).filter(
+                (n) => n !== row && !n.contains(title) && !n.querySelector?.("[data-content-editable-leaf]"),
+              );
+              if (body.length) return body;
+            }
+            row = parent;
+          }
+        }
+
         const rows = Array.from(block.children);
         if (rows.length >= 2) return rows.slice(1);
         const inner = block.querySelector(":scope > div");
@@ -675,23 +714,25 @@ export const RUNTIME_JS = `(() => {
 
       const setOpen = (open) => {
         block.setAttribute("data-nsp-open", open ? "1" : "0");
-        const btn = block.querySelector('[role="button"]');
         if (btn) {
           btn.setAttribute("aria-expanded", open ? "true" : "false");
           btn.setAttribute("aria-label", open ? "Close" : "Open");
           const svg = btn.querySelector("svg");
           if (svg) {
             svg.style.transform = open ? "rotateZ(0deg)" : "rotateZ(-90deg)";
+            svg.style.fill = "currentColor";
+            svg.style.color = "currentColor";
           }
         }
         for (const n of contentNodes()) {
-          if (n === header || (header && header.contains(n))) continue;
+          if (btn && (n === btn || btn.contains(n))) continue;
+          if (title && (n === title || title.contains(n))) continue;
           n.style.display = open ? "" : "none";
         }
       };
 
-      const startOpen = block.getAttribute("data-nsp-open") === "1";
-      setOpen(startOpen);
+      // Always start collapsed offline (content stays in DOM for click-to-open)
+      setOpen(false);
 
       const onToggle = (e) => {
         if (e.target.closest("a")) return;
@@ -699,11 +740,11 @@ export const RUNTIME_JS = `(() => {
         e.stopPropagation();
         setOpen(block.getAttribute("data-nsp-open") !== "1");
       };
-      header.style.cursor = "pointer";
-      header.addEventListener("click", onToggle);
-      // Title text is often outside the chevron button — make the whole row clickable
-      const title = block.querySelector("[data-content-editable-leaf]");
-      if (title && title !== header && !header.contains(title)) {
+      if (btn) {
+        btn.style.cursor = "pointer";
+        btn.addEventListener("click", onToggle);
+      }
+      if (title) {
         title.style.cursor = "pointer";
         title.addEventListener("click", onToggle);
       }
@@ -850,6 +891,16 @@ export const RUNTIME_JS = `(() => {
         img.style.maxWidth = "100%";
         img.style.height = "auto";
         img.style.maxHeight = "none";
+      }
+      // Bookmark favicons must keep their ~21px size (CSS used to force 100%)
+      if (img.closest(".notion-bookmark-block")) {
+        const st = img.getAttribute("style") || "";
+        if (/width:\s*2[0-9](\.\d+)?px/i.test(st) || /width:\s*1[6-9](\.\d+)?px/i.test(st)) {
+          img.style.setProperty("width", "22px", "important");
+          img.style.setProperty("height", "22px", "important");
+          img.style.setProperty("max-width", "22px", "important");
+          img.style.setProperty("max-height", "22px", "important");
+        }
       }
       repairMediaSrc(img);
       markZoomable(img);
@@ -1400,14 +1451,56 @@ export const RUNTIME_JS = `(() => {
         max-width: 100%;
         cursor: pointer;
       }
-      .notion-bookmark-block,
-      .notion-bookmark-block img {
+      .notion-bookmark-block {
         cursor: pointer !important;
+        max-width: 100% !important;
+      }
+      .notion-bookmark-block a {
+        max-width: 100% !important;
+        width: 100% !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: stretch !important;
+        overflow: hidden !important;
+        box-sizing: border-box !important;
+      }
+      .notion-bookmark-block a > div {
+        min-width: 0 !important;
+        box-sizing: border-box !important;
+      }
+      /* Cover images only — do NOT force favicons to 100% width */
+      .notion-bookmark-block img[style*="width: 100%"],
+      .notion-bookmark-block img[style*="height: 100%"] {
+        max-width: 280px !important;
+        max-height: 154px !important;
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+      }
+      /* Favicon / small icon row (Notion uses ~21px) */
+      .notion-bookmark-block img[style*="21.312px"],
+      .notion-bookmark-block img[style*="width: 16px"],
+      .notion-bookmark-block img[style*="width: 18px"],
+      .notion-bookmark-block img[style*="width: 20px"],
+      .notion-bookmark-block img[style*="width: 21px"],
+      .notion-bookmark-block img[style*="width: 22px"],
+      .notion-bookmark-block img[style*="width: 24px"] {
+        width: 22px !important;
+        height: 22px !important;
+        max-width: 22px !important;
+        max-height: 22px !important;
+        flex-shrink: 0 !important;
+        object-fit: cover !important;
       }
       .notion-audio-block, .notion-audio-block audio {
         max-width: 100% !important;
-        width: 100%;
+        width: 100% !important;
         pointer-events: auto !important;
+        box-sizing: border-box !important;
+      }
+      .notion-audio-block {
+        align-self: stretch !important;
+        display: block !important;
       }
       .notion-audio-block audio {
         display: block !important;
@@ -1416,23 +1509,8 @@ export const RUNTIME_JS = `(() => {
       }
       .notion-audio-block [role="figure"] {
         min-height: 40px;
-        pointer-events: auto !important;
-      }
-      /* Bookmark cards: keep cover column compact (gif placeholders used to balloon) */
-      .notion-bookmark-block a {
-        max-width: 100%;
-      }
-      .notion-bookmark-block img {
-        max-width: 100% !important;
-        max-height: 154px !important;
         width: 100% !important;
-        height: 100% !important;
-        object-fit: cover !important;
-      }
-      .notion-bookmark-block a > div:first-child {
-        max-height: 154px;
-        max-width: 280px;
-        flex: 1 1 120px !important;
+        pointer-events: auto !important;
       }
       .notion-table-view, .notion-scroller.horizontal {
         overflow-x: auto !important;
@@ -1473,19 +1551,64 @@ export const RUNTIME_JS = `(() => {
         z-index: 5;
         background: var(--c-bacPri, #191919);
       }
-      .notion-collection-view-tab-button {
+      .notion-collection-view-tab-button,
+      .notion-collection-view-tab,
+      [role="tab"].notion-collection-view-tab {
         cursor: pointer !important;
         pointer-events: auto !important;
       }
       .notion-toggle-block [role="button"],
+      .notion-toggle-block [data-content-editable-leaf],
       .notion-toggle-block { cursor: pointer; }
+      .notion-dark-theme .notion-toggle-block [role="button"],
+      .notion-dark-theme .notion-toggle-block [role="button"] svg {
+        color: #fff !important;
+        fill: #fff !important;
+      }
+      .notion-light-theme .notion-toggle-block [role="button"],
+      .notion-light-theme .notion-toggle-block [role="button"] svg {
+        color: #37352f !important;
+        fill: #37352f !important;
+      }
       .notion-toggle-block [data-nsp-toggle-content] {
         margin-top: 2px;
       }
       .notion-floating-table-of-contents { pointer-events: auto !important; }
 
+      /* Column lists: never overflow the frame; stack when narrow / in peek */
+      .notion-column_list-block > div {
+        flex-wrap: wrap !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      .notion-column_list-block > div > div {
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      .notion-column_list-block > div > div[style*="opacity: 0"],
+      .notion-column_list-block > div > div[style*="width: 46px"] {
+        display: none !important;
+        height: 0 !important;
+        width: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        flex: 0 0 0 !important;
+      }
+      [data-nsp-peek-body] .notion-column_list-block > div,
+      .nsp-peek-content .notion-column_list-block > div {
+        flex-direction: column !important;
+        align-items: stretch !important;
+      }
+      [data-nsp-peek-body] .notion-column_list-block > div > div,
+      .nsp-peek-content .notion-column_list-block > div > div {
+        width: 100% !important;
+        max-width: 100% !important;
+        flex: 1 1 auto !important;
+      }
+
       /* Mobile: stack Notion column layouts */
-      @media (max-width: 820px) {
+      @media (max-width: 900px) {
         .notion-column_list-block > div {
           flex-direction: column !important;
           align-items: stretch !important;
@@ -1495,14 +1618,6 @@ export const RUNTIME_JS = `(() => {
           max-width: 100% !important;
           flex-grow: 1 !important;
           flex-shrink: 1 !important;
-        }
-        .notion-column_list-block > div > div[style*="opacity: 0"],
-        .notion-column_list-block > div > div[style*="width: 46px"] {
-          display: none !important;
-          height: 0 !important;
-          width: 0 !important;
-          padding: 0 !important;
-          margin: 0 !important;
         }
         .layout, .layout-wide, .layout-content {
           padding-inline: 12px !important;
@@ -2105,7 +2220,33 @@ export function injectRuntime(
     cursor: zoom-in !important;
     pointer-events: auto !important;
   }
-  .notion-audio-block, .notion-audio-block audio { max-width: 100% !important; width: 100%; }
+  .notion-audio-block, .notion-audio-block audio { max-width: 100% !important; width: 100% !important; box-sizing: border-box; }
+  .notion-bookmark-block img[style*="21.312px"],
+  .notion-bookmark-block img[style*="width: 21px"],
+  .notion-bookmark-block img[style*="width: 22px"] {
+    width: 22px !important; height: 22px !important; max-width: 22px !important; max-height: 22px !important;
+  }
+  .notion-bookmark-block img[style*="width: 100%"],
+  .notion-bookmark-block img[style*="height: 100%"] {
+    max-width: 280px !important; max-height: 154px !important;
+  }
+  .notion-dark-theme .notion-toggle-block [role="button"],
+  .notion-dark-theme .notion-toggle-block [role="button"] svg {
+    color: #fff !important; fill: #fff !important;
+  }
+  .notion-column_list-block > div { flex-wrap: wrap !important; max-width: 100% !important; }
+  .notion-column_list-block > div > div[style*="opacity: 0"],
+  .notion-column_list-block > div > div[style*="width: 46px"] {
+    display: none !important; width: 0 !important; height: 0 !important; padding: 0 !important; margin: 0 !important;
+  }
+  [data-nsp-peek-body] .notion-column_list-block > div,
+  .nsp-peek-content .notion-column_list-block > div {
+    flex-direction: column !important; align-items: stretch !important;
+  }
+  [data-nsp-peek-body] .notion-column_list-block > div > div,
+  .nsp-peek-content .notion-column_list-block > div > div {
+    width: 100% !important; max-width: 100% !important; flex: 1 1 auto !important;
+  }
   .notion-table-view, .notion-scroller.horizontal {
     overflow-x: auto !important;
     max-width: 100%;
@@ -2123,7 +2264,7 @@ export function injectRuntime(
   }
   .notion-toggle-block [role="button"],
   .notion-toggle-block { cursor: pointer; }
-  @media (max-width: 820px) {
+  @media (max-width: 900px) {
     .notion-column_list-block > div {
       flex-direction: column !important;
       align-items: stretch !important;
@@ -2133,14 +2274,6 @@ export function injectRuntime(
       max-width: 100% !important;
       flex-grow: 1 !important;
       flex-shrink: 1 !important;
-    }
-    .notion-column_list-block > div > div[style*="opacity: 0"],
-    .notion-column_list-block > div > div[style*="width: 46px"] {
-      display: none !important;
-      height: 0 !important;
-      width: 0 !important;
-      padding: 0 !important;
-      margin: 0 !important;
     }
     .layout, .layout-wide, .layout-content {
       padding-inline: 12px !important;

@@ -1,1 +1,1 @@
-node dist/cli.js sync --url "https://almond-brownie-c82.notion.site/Elementary-3b515e0e4a098053bb74c985cebfd777" --out ./_site --headed --max-pages 0
+node dist/cli.js sync --url "https://almond-brownie-c82.notion.site/Elementary-3b515e0e4a098053bb74c985cebfd777" --out ./_site --headed --max-pages 0 --full
