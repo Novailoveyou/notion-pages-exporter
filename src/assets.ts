@@ -768,7 +768,7 @@ async function fetchOgImageUrl(pageUrl: string): Promise<string | null> {
     const res = await fetch(pageUrl, {
       headers: {
         "user-agent":
-          "Mozilla/5.0 (compatible; notion-static-parser/1.0; +https://github.com/novailoveyou/notion-static-parser)",
+          "Mozilla/5.0 (compatible; notion-static-exporter/1.0; +https://github.com/Novailoveyou/notion-pages-exporter)",
         accept: "text/html,application/xhtml+xml",
       },
       redirect: "follow",
@@ -816,7 +816,7 @@ async function downloadPublicAsset(
     const res = await fetch(clean, {
       headers: {
         "user-agent":
-          "Mozilla/5.0 (compatible; notion-static-parser/1.0)",
+          "Mozilla/5.0 (compatible; notion-static-exporter/1.0)",
         accept: "image/*,*/*",
       },
       redirect: "follow",

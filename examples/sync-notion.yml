@@ -29,7 +29,7 @@ jobs:
       - name: Cache Chrome profile (Cloudflare cookies)
         uses: actions/cache@v4
         with:
-          path: ~/.notion-static-parser/chrome-profile
+          path: ~/.notion-static-exporter/chrome-profile
           key: notion-chrome-profile-${{ runner.os }}-v2
           restore-keys: |
             notion-chrome-profile-
@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
           echo "Chrome: $PUPPETEER_EXECUTABLE_PATH"
-          bunx --bun notion-static-parser sync \
+          bunx --bun notion-static-exporter sync \
             --url "$NOTION_URL" \
             --out . \
             --keep-cname \
@@ -68,7 +68,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           # Keep local tooling / staging leftovers out of the Pages commit
-          git reset -- .notion-static-parser 2>/dev/null || true
+          git reset -- .notion-static-exporter 2>/dev/null || true
           git reset -- '*.nsp-staging' '*.nsp-backup' 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "No changes"

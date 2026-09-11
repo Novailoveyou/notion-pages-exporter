@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "notion-static-parser",
+      "name": "notion-static-exporter",
       "dependencies": {
         "puppeteer": "^24.22.0",
       },

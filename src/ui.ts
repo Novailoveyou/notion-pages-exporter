@@ -35,7 +35,7 @@ const STATUS_LINES = 3;
 
 export function header(title: string): void {
   pauseStatus();
-  console.log(c.bold(`\nnotion-static-parser · ${title}`));
+  console.log(c.bold(`\nnotion-static-exporter · ${title}`));
 }
 
 export function info(msg: string): void {

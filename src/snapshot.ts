@@ -765,7 +765,7 @@ export async function freezeNotionPage(page: Page): Promise<string> {
     }
     if (cssChunks.length) {
       const style = document.createElement("style");
-      style.setAttribute("data-notion-static-parser", "inlined");
+      style.setAttribute("data-notion-static-exporter", "inlined");
       // Drop print-only chrome-hiding rules Notion ships without a usable @media
       // wrapper after cssText serialization in some browsers.
       let css = cssChunks.join("\n\n");
@@ -779,7 +779,7 @@ export async function freezeNotionPage(page: Page): Promise<string> {
 
     // Always keep the page topbar (breadcrumbs) visible offline
     const topbarFix = document.createElement("style");
-    topbarFix.setAttribute("data-notion-static-parser", "topbar");
+    topbarFix.setAttribute("data-notion-static-exporter", "topbar");
     topbarFix.textContent = `
       .notion-topbar {
         display: flex !important;

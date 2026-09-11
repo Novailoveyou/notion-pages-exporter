@@ -54,7 +54,7 @@ export async function triggerWorkflow(
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28",
       "Content-Type": "application/json",
-      "User-Agent": "notion-static-parser",
+      "User-Agent": "notion-static-exporter",
     },
     body: JSON.stringify({ ref }),
   });

@@ -360,7 +360,7 @@ export async function syncNotionSite(opts: SyncOptions): Promise<SyncResult> {
     stopSpinner();
     if (backup) {
       note(`Previous site backed up → ${backup}`);
-      note(`Restore with: notion-static-parser restore --out ${liveOut}`);
+      note(`Restore with: notion-static-exporter restore --out ${liveOut}`);
     }
 
     const durationMs = Date.now() - startedAt;

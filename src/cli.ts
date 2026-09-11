@@ -25,16 +25,16 @@ function printHelp(): void {
 Scrape a public Notion site into static files for GitHub Pages.
 
 Usage:
-  bunx notion-static-parser sync [options]
-  bunx notion-static-parser restore --out ./_site
-  bunx notion-static-parser trigger [options]
-  bunx notion-static-parser help
+  bunx notion-static-exporter sync [options]
+  bunx notion-static-exporter restore --out ./_site
+  bunx notion-static-exporter trigger [options]
+  bunx notion-static-exporter help
 
 Commands:
   sync          Crawl public notion.site URL (default) and write static HTML
   restore       Restore the previous site from the single backup
   trigger       Dispatch a GitHub Actions workflow on a consumer repo
-  init-config   Write notion-static-parser.config.json example
+  init-config   Write notion-static-exporter.config.json example
   help          Show this help
 
 Sync options:
@@ -73,7 +73,7 @@ Env:
   OUT_DIR             Default output directory
   GITHUB_TOKEN        Token for trigger (or GH_TOKEN)
 
-Config file (optional): notion-static-parser.config.json
+Config file (optional): notion-static-exporter.config.json
 `);
 }
 
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
 
   if (cmd === "init-config") {
     const { writeFileSync, existsSync } = await import("node:fs");
-    const path = resolve(ROOT, "notion-static-parser.config.json");
+    const path = resolve(ROOT, "notion-static-exporter.config.json");
     if (existsSync(path) && !hasFlag(argv, "force")) {
       warn(`Already exists: ${path} (pass --force to overwrite)`);
       return;
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
 
   if (!url) {
     fail("Missing --url (or NOTION_URL / config.url)");
-    note("Example: bunx notion-static-parser sync --url https://….notion.site/…");
+    note("Example: bunx notion-static-exporter sync --url https://….notion.site/…");
     process.exit(1);
   }
 

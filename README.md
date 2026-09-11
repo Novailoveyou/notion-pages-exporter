@@ -1,4 +1,4 @@
-# notion-static-parser
+# notion-static-exporter
 
 Scrape a **public** Notion site (`*.notion.site`) into a static mirror that looks
 like the **live Notion UI** — not Notion’s admin “Export → HTML” look.
@@ -16,7 +16,7 @@ No Notion API token. Exhaustive BFS: every same-site link on every page is
 queued until the tree is done.
 
 ```bash
-bunx notion-static-parser sync \
+bunx notion-static-exporter sync \
   --url "https://almond-brownie-c82.notion.site/Elementary-3b515e0e4a098053bb74c985cebfd777" \
   --out ./_site
 ```
@@ -34,13 +34,13 @@ bun run build
 bun run publish:prod   # → bun publish --access public
 ```
 
-That publishes `notion-static-parser` (version from `package.json`). After that,
+That publishes `notion-static-exporter` (version from `package.json`). After that,
 anywhere can run:
 
 ```bash
-npx notion-static-parser sync --url "…" --out .
+npx notion-static-exporter sync --url "…" --out .
 # or
-bunx notion-static-parser sync --url "…" --out .
+bunx notion-static-exporter sync --url "…" --out .
 ```
 
 Bump `version` in `package.json` before each publish if the previous version is
@@ -51,12 +51,12 @@ already on the registry.
 ### Install / run locally
 
 ```bash
-bunx notion-static-parser sync --url "https://….notion.site/…" --out ./_site
-bun add -g notion-static-parser
-notion-static-parser sync --url "…" --out ./_site
+bunx notion-static-exporter sync --url "https://….notion.site/…" --out ./_site
+bun add -g notion-static-exporter
+notion-static-exporter sync --url "…" --out ./_site
 ```
 
-Optional config `notion-static-parser.config.json`:
+Optional config `notion-static-exporter.config.json`:
 
 ```json
 {
@@ -68,7 +68,7 @@ Optional config `notion-static-parser.config.json`:
 ```
 
 ```bash
-bunx notion-static-parser init-config
+bunx notion-static-exporter init-config
 ```
 
 ### Wire each GitHub Pages repo
@@ -100,7 +100,7 @@ On schedule (every 4h in the example) or **Actions → Sync Notion → Run workf
 1. Checkout the Pages repo
 2. Install Chrome + Bun
 3. Cache Chrome profile (Cloudflare cookies)
-4. `bunx notion-static-parser sync --url "$NOTION_URL" --out . --keep-cname …`
+4. `bunx notion-static-exporter sync --url "$NOTION_URL" --out . --keep-cname …`
 5. Commit & push if anything changed → Pages updates
 
 The workflow also:
@@ -113,7 +113,7 @@ Local override for a custom Chrome binary:
 
 ```bash
 PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome \
-  bunx notion-static-parser sync --url "…" --out ./_site
+  bunx notion-static-exporter sync --url "…" --out ./_site
 ```
 
 ### Trigger from this machine
@@ -122,7 +122,7 @@ After the workflow exists:
 
 ```bash
 export GITHUB_TOKEN=ghp_…   # workflow scope
-bunx notion-static-parser trigger \
+bunx notion-static-exporter trigger \
   --repo Novailoveyou/elementary.english.orlov.app \
   --workflow sync-notion.yml \
   --ref main
@@ -134,7 +134,7 @@ Same for `english.orlov.app`.
 
 | Step | Where |
 |------|--------|
-| 1. `bun run publish:prod` | `notion-static-parser` |
+| 1. `bun run publish:prod` | `notion-static-exporter` |
 | 2. Add workflow + `NOTION_URL` | each Pages repo |
 | 3. Disable old notion4ever `publish.yml` | each Pages repo |
 | 4. Manual “Run workflow” once | verify scrape + commit |
@@ -170,14 +170,14 @@ freeze/asset download. Use `--full` to force a complete re-scrape. On failure
 the live `--out` is left untouched.
 
 ```bash
-bunx notion-static-parser restore --out ./_site
+bunx notion-static-exporter restore --out ./_site
 ```
 
 ## Cloudflare
 
 Notion’s public sites sit behind Cloudflare (“Just a moment…”). The crawler:
 
-1. Uses a **persistent Chrome profile** (`~/.notion-static-parser/chrome-profile`) so `cf_clearance` cookies stick across runs
+1. Uses a **persistent Chrome profile** (`~/.notion-static-exporter/chrome-profile`) so `cf_clearance` cookies stick across runs
 2. **Waits** for challenges to clear before saving a page
 3. **Delays** between page loads (`--delay-ms`)
 4. **Retries** blocked pages (`--retries`, default 3)
@@ -186,7 +186,7 @@ Notion’s public sites sit behind Cloudflare (“Just a moment…”). The craw
 If challenges still stick in headless CI, warm the profile once locally:
 
 ```bash
-bunx notion-static-parser sync --url "…" --out ./_site --headed --max-pages 5
+bunx notion-static-exporter sync --url "…" --out ./_site --headed --max-pages 5
 ```
 
 Then re-run headless using the same `--user-data-dir` (or let Actions restore the cached profile).
@@ -209,7 +209,7 @@ phase lines every few seconds instead.
 ## Library
 
 ```ts
-import { syncNotionSite, triggerWorkflow } from "notion-static-parser";
+import { syncNotionSite, triggerWorkflow } from "notion-static-exporter";
 
 await syncNotionSite({
   url: "https://….notion.site/…",

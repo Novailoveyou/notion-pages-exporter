@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export type ParserConfig = {
+export type ExporterConfig = {
   url?: string;
   out?: string;
   keepCname?: boolean;
@@ -16,16 +16,16 @@ export type ParserConfig = {
 };
 
 const CONFIG_NAMES = [
-  "notion-static-parser.config.json",
-  ".notion-static-parser.json",
+  "notion-static-exporter.config.json",
+  ".notion-static-exporter.json",
 ];
 
-export function loadConfig(projectRoot: string): ParserConfig {
+export function loadConfig(projectRoot: string): ExporterConfig {
   for (const name of CONFIG_NAMES) {
     const path = join(projectRoot, name);
     if (!existsSync(path)) continue;
     try {
-      const raw = JSON.parse(readFileSync(path, "utf8")) as ParserConfig;
+      const raw = JSON.parse(readFileSync(path, "utf8")) as ExporterConfig;
       return raw && typeof raw === "object" ? raw : {};
     } catch {
       throw new Error(`Invalid JSON config: ${path}`);

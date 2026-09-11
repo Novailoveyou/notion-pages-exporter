@@ -11,7 +11,7 @@ export type LaunchBrowserOptions = {
 };
 
 export function defaultUserDataDir(): string {
-  return join(homedir(), ".notion-static-parser", "chrome-profile");
+  return join(homedir(), ".notion-static-exporter", "chrome-profile");
 }
 
 function isCi(): boolean {
