@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Fix CI: when syncing with `--out .` (GitHub Actions), preserve `.git` / `.github`
+  instead of renaming the checkout into `*.nsp-backup` (which broke Commit & push)
+
 ## 1.0.0
 
 - Initial release: Puppeteer BFS scrape of public `notion.site` pages

@@ -193,9 +193,15 @@ export function ensureCachedPageInStaging(
   return true;
 }
 
+const PRESERVE_IN_OUT = new Set([".git", ".github", ".gitignore"]);
+
 /**
  * Atomically publish staging → outRoot, keeping one previous copy at backup.
  * Live outRoot is never wiped until staging is complete.
+ *
+ * When outRoot is a git checkout (`--out .` in Actions), we must NOT rename the
+ * directory (that would move `.git` aside and leave the next step outside a repo).
+ * Instead merge staging into place while preserving `.git` / `.github`.
  */
 export function publishStaging(outRoot: string): { backup: string | null } {
   const staging = stagingDir(outRoot);
@@ -207,6 +213,31 @@ export function publishStaging(outRoot: string): { backup: string | null } {
 
   if (existsSync(backup)) {
     rmSync(backup, { recursive: true, force: true });
+  }
+
+  const preserveRepo = existsSync(join(outRoot, ".git"));
+
+  if (preserveRepo) {
+    mkdirSync(backup, { recursive: true });
+    for (const name of readdirSync(outRoot)) {
+      if (PRESERVE_IN_OUT.has(name)) continue;
+      const src = join(outRoot, name);
+      try {
+        cpSync(src, join(backup, name), { recursive: true });
+      } catch {
+        /* ignore unreadable entries */
+      }
+    }
+    for (const name of readdirSync(outRoot)) {
+      if (PRESERVE_IN_OUT.has(name)) continue;
+      rmSync(join(outRoot, name), { recursive: true, force: true });
+    }
+    for (const name of readdirSync(staging)) {
+      if (PRESERVE_IN_OUT.has(name)) continue;
+      cpSync(join(staging, name), join(outRoot, name), { recursive: true });
+    }
+    rmSync(staging, { recursive: true, force: true });
+    return { backup: siteHasContent(backup) ? backup : null };
   }
 
   if (siteHasContent(outRoot)) {
@@ -238,6 +269,21 @@ export function restoreBackup(outRoot: string): boolean {
   if (existsSync(staging)) {
     rmSync(staging, { recursive: true, force: true });
   }
+
+  const preserveRepo = existsSync(join(outRoot, ".git"));
+  if (preserveRepo) {
+    for (const name of readdirSync(outRoot)) {
+      if (PRESERVE_IN_OUT.has(name)) continue;
+      rmSync(join(outRoot, name), { recursive: true, force: true });
+    }
+    for (const name of readdirSync(backup)) {
+      if (PRESERVE_IN_OUT.has(name)) continue;
+      cpSync(join(backup, name), join(outRoot, name), { recursive: true });
+    }
+    rmSync(backup, { recursive: true, force: true });
+    return true;
+  }
+
   // Move current aside briefly, then put backup in place
   const doomed = `${outRoot}.nsp-restore-old`;
   if (existsSync(outRoot)) {
