@@ -2016,8 +2016,9 @@ export const RUNTIME_JS = `(() => {
   let peekRoot = null;
   let peekCurrentHref = "";
   let peekFull = false;
-  let peekHistoryPushed = false;
+  let peekHistoryDepth = 0;
   let peekIgnorePop = false;
+  let peekRestoring = false;
   let peekLoadGen = 0;
 
   function ensurePeekRoot() {
@@ -2072,34 +2073,51 @@ export const RUNTIME_JS = `(() => {
     return peekFull ? "full" : peekMode;
   }
 
-  function closePeek() {
+  function clearPeekUi() {
     if (!peekRoot) return;
-    // Drop fullscreen history entry without re-opening peek
-    if (peekFull && peekHistoryPushed) {
-      peekIgnorePop = true;
-      peekHistoryPushed = false;
-      peekFull = false;
-      history.back();
-    } else {
-      peekFull = false;
-      peekHistoryPushed = false;
-    }
     peekRoot.setAttribute("data-open", "0");
     peekRoot.setAttribute("data-mode", peekMode);
-    peekRoot.querySelector("[data-nsp-peek-body]").innerHTML = "";
+    const body = peekRoot.querySelector("[data-nsp-peek-body]");
+    if (body) body.innerHTML = "";
     peekCurrentHref = "";
+    peekFull = false;
     document.body.style.overflow = "";
+  }
+
+  function pushPeekHistory(href, mode) {
+    try {
+      history.pushState({ nspPeek: true, href, mode }, "", href);
+      peekHistoryDepth += 1;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function closePeek() {
+    if (!peekRoot) return;
+    const depth = peekHistoryDepth;
+    peekHistoryDepth = 0;
+    clearPeekUi();
+    if (depth > 0) {
+      peekIgnorePop = true;
+      try {
+        history.go(-depth);
+      } catch (_) {
+        peekIgnorePop = false;
+      }
+    }
   }
 
   function exitFullPeek() {
     if (!peekFull) return;
-    if (peekHistoryPushed) {
-      peekHistoryPushed = false;
-      history.back(); // popstate → restorePeekAfterFull
+    if (peekHistoryDepth > 0) {
+      // Pop the fullscreen entry; popstate restores side/center or closes
+      peekIgnorePop = false;
+      history.back();
       return;
     }
     peekFull = false;
-    // If fullscreen is the saved default, exiting closes peek (back to gallery)
     if (peekMode === "full") closePeek();
     else if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
     else closePeek();
@@ -2109,31 +2127,29 @@ export const RUNTIME_JS = `(() => {
     openPeek(href, "full");
   }
 
-  function restorePeekAfterFull() {
-    peekFull = false;
-    peekHistoryPushed = false;
-    if (peekMode === "full") closePeek();
-    else if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
-    else closePeek();
-  }
-
   async function openPeek(href, mode) {
     const requested = mode || peekMode || "full";
+    const wasOpen = !!(peekRoot && peekRoot.getAttribute("data-open") === "1");
+    const wasFull = peekFull;
+    const prevHref = peekCurrentHref;
+
     if (requested === "full") {
-      if (!peekFull) {
-        peekFull = true;
-        try {
-          history.pushState({ nspPeekFull: true, href }, "", href);
-          peekHistoryPushed = true;
-        } catch (_) {
-          peekHistoryPushed = false;
-        }
-      }
+      peekFull = true;
     } else if (requested === "side" || requested === "center") {
       peekMode = requested;
       localStorage.setItem("nsp-peek-mode", peekMode);
       peekFull = false;
     }
+
+    // Push history for every open / in-peek navigation / expand-to-full
+    if (!peekRestoring) {
+      const modeChanged = requested === "full" && wasOpen && !wasFull;
+      const hrefChanged = !wasOpen || prevHref !== href;
+      if (hrefChanged || modeChanged) {
+        pushPeekHistory(href, requested === "full" ? "full" : peekMode);
+      }
+    }
+
     const root = ensurePeekRoot();
     root.setAttribute("data-mode", displayPeekMode());
     peekCurrentHref = href;
@@ -2233,15 +2249,7 @@ export const RUNTIME_JS = `(() => {
         e.preventDefault();
         e.stopPropagation();
         const next = h.split("#")[0];
-        if (peekFull) {
-          peekCurrentHref = next;
-          try {
-            history.replaceState({ nspPeekFull: true, href: next }, "", next);
-          } catch (_) {}
-          openPeek(next);
-        } else {
-          openPeek(next, peekMode);
-        }
+        openPeek(next, peekFull ? "full" : peekMode);
       };
     } catch (err) {
       if (gen !== peekLoadGen) return;
@@ -2254,12 +2262,28 @@ export const RUNTIME_JS = `(() => {
 
   if (!window.__nspPeekPopstate) {
     window.__nspPeekPopstate = true;
-    window.addEventListener("popstate", () => {
+    window.addEventListener("popstate", (ev) => {
       if (peekIgnorePop) {
         peekIgnorePop = false;
         return;
       }
-      if (peekFull) restorePeekAfterFull();
+      const st = ev && ev.state;
+      if (st && st.nspPeek && st.href) {
+        peekHistoryDepth = Math.max(0, peekHistoryDepth - 1);
+        peekRestoring = true;
+        try {
+          const mode = st.mode || (st.nspPeekFull ? "full" : peekMode);
+          if (mode === "full") peekFull = true;
+          else peekFull = false;
+          openPeek(st.href, mode === "full" ? "full" : mode);
+        } finally {
+          peekRestoring = false;
+        }
+        return;
+      }
+      // Left the peek stack — close UI only (URL already restored)
+      peekHistoryDepth = 0;
+      clearPeekUi();
     });
   }
 
