@@ -24,8 +24,38 @@ export const RUNTIME_JS = `(() => {
       }
       body.style.width = "100%";
       body.style.maxWidth = "100%";
+      normalizeFrozenWidths(document);
     } catch (_) {
       /* ignore — can race during fullscreen / lightbox */
+    }
+  }
+
+  /** Scraped Notion freezes desktop widths (often 1440px) — clamp without touching gallery cards. */
+  function normalizeFrozenWidths(scope) {
+    const root = scope || document;
+    for (const el of $$(".layout, .layout-wide, .layout-content, .notion-page-content, .notion-frame, main.notion-frame", root)) {
+      if (!el || !el.style) continue;
+      const w = el.style.width || "";
+      const mw = el.style.maxWidth || "";
+      if (/\\d{3,}px/.test(w)) {
+        el.style.width = "100%";
+        el.style.maxWidth = "100%";
+      }
+      if (/\\d{3,}px/.test(mw) || /1440px/.test(mw)) {
+        el.style.maxWidth = "100%";
+      }
+    }
+    for (const el of $$(".notion-image-block", root)) {
+      if (!el.style) continue;
+      const w = el.style.width || "";
+      const mw = el.style.maxWidth || "";
+      if (/1440px/.test(mw) || /1440px/.test(w)) {
+        el.style.maxWidth = "100%";
+      }
+      if (/^\\d+(\\.\\d+)?px$/.test(w) && parseFloat(w) > 640) {
+        el.style.width = "100%";
+        el.style.maxWidth = "100%";
+      }
     }
   }
 
@@ -1628,6 +1658,17 @@ export const RUNTIME_JS = `(() => {
         max-height: none !important;
         object-fit: contain !important;
       }
+      /* Lesson-style figures: scraped overflow:hidden + fixed height crops images */
+      .notion-image-block [style*="overflow: hidden"],
+      .notion-image-block .notion-cursor-default[style*="overflow"],
+      .notion-page-content .notion-image-block div[style*="overflow: hidden"] {
+        overflow: visible !important;
+        height: auto !important;
+        max-height: none !important;
+      }
+      .notion-image-block [style*="height: 100%"] {
+        height: auto !important;
+      }
       [data-nsp-peek-body] .notion-page-content,
       .nsp-peek-content .notion-page-content,
       [data-nsp-peek-body] .notion-image-block [role="figure"],
@@ -1641,22 +1682,53 @@ export const RUNTIME_JS = `(() => {
         max-width: 100%;
         cursor: pointer;
       }
+
+      /* Emoji / page icons — survive theme swaps & missing Color Emoji fonts */
+      .notion-record-icon,
+      .notion-record-icon span,
+      .notion-record-icon [role="img"],
+      [aria-label="Page icon"] {
+        font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
+          "Android Emoji", "EmojiOne Color", "Twemoji Mozilla", "Segoe UI Symbol",
+          sans-serif !important;
+        color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
+        -webkit-text-fill-color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        line-height: 1 !important;
+      }
+
       .notion-bookmark-block {
         cursor: pointer !important;
         max-width: 100% !important;
+        width: 100% !important;
+        align-self: stretch !important;
+        overflow: hidden !important;
+        box-sizing: border-box !important;
       }
       .notion-bookmark-block a {
         max-width: 100% !important;
         width: 100% !important;
         display: flex !important;
-        flex-wrap: wrap !important;
+        flex-wrap: nowrap !important;
         align-items: stretch !important;
         overflow: hidden !important;
         box-sizing: border-box !important;
       }
       .notion-bookmark-block a > div {
         min-width: 0 !important;
+        max-width: 100% !important;
+        flex: 1 1 auto !important;
         box-sizing: border-box !important;
+        overflow: hidden !important;
+      }
+      .notion-bookmark-block [style*="-webkit-line-clamp"],
+      .notion-bookmark-block [style*="line-clamp"] {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        overflow: hidden !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
       }
       /* Cover images only — do NOT force favicons to 100% width */
       .notion-bookmark-block img[style*="width: 100%"],
@@ -1772,6 +1844,12 @@ export const RUNTIME_JS = `(() => {
       .notion-floating-table-of-contents { pointer-events: auto !important; }
 
       /* Column lists: never overflow the frame; stack when narrow / in peek */
+      .notion-column_list-block {
+        max-width: 100% !important;
+        width: 100% !important;
+        align-self: stretch !important;
+        box-sizing: border-box !important;
+      }
       .notion-column_list-block > div {
         flex-wrap: wrap !important;
         max-width: 100% !important;
@@ -1803,7 +1881,23 @@ export const RUNTIME_JS = `(() => {
         flex: 1 1 auto !important;
       }
 
-      /* Mobile: stack Notion column layouts */
+      /* Kill scraped desktop canvas width so mobile/peek use the viewport */
+      .layout,
+      .layout-wide,
+      .layout-content,
+      .notion-page-content {
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+      }
+      .notion-image-block[style*="1440px"],
+      .notion-page-content [style*="max-width: 1440px"],
+      .notion-page-content [style*="width: 1440px"] {
+        max-width: 100% !important;
+        width: 100% !important;
+      }
+
+      /* Mobile: stack Notion column layouts + use more of the screen */
       @media (max-width: 900px) {
         .notion-column_list-block > div {
           flex-direction: column !important;
@@ -1815,11 +1909,19 @@ export const RUNTIME_JS = `(() => {
           flex-grow: 1 !important;
           flex-shrink: 1 !important;
         }
-        .layout, .layout-wide, .layout-content {
-          padding-inline: 12px !important;
+        .layout, .layout-wide {
+          padding-inline: 8px !important;
+        }
+        .layout-content {
+          padding-inline: 0 !important;
         }
         .notion-page-content {
-          padding-inline: 4px !important;
+          padding-inline: 0 !important;
+        }
+        .notion-image-block {
+          width: 100% !important;
+          max-width: 100% !important;
+          align-self: stretch !important;
         }
       }
 
@@ -1948,8 +2050,15 @@ export const RUNTIME_JS = `(() => {
       }
       [data-nsp-peek-body] .layout,
       [data-nsp-peek-body] .layout-wide {
-        padding-inline: 8px !important;
+        padding-inline: 10px !important;
         max-width: 100% !important;
+        width: 100% !important;
+      }
+      [data-nsp-peek-body] .layout-content,
+      [data-nsp-peek-body] .notion-page-content {
+        padding-inline: 0 !important;
+        max-width: 100% !important;
+        width: 100% !important;
       }
       [data-nsp-card-actions] {
         position: absolute;
@@ -2133,6 +2242,12 @@ export const RUNTIME_JS = `(() => {
     const wasFull = peekFull;
     const prevHref = peekCurrentHref;
 
+    // Resolve before pushState — relative fetch after history change can miss the file
+    let fetchUrl = href;
+    try {
+      fetchUrl = new URL(href, location.href).href;
+    } catch (_) {}
+
     if (requested === "full") {
       peekFull = true;
     } else if (requested === "side" || requested === "center") {
@@ -2169,7 +2284,7 @@ export const RUNTIME_JS = `(() => {
       }));
     }
     left.appendChild(iconBtn("Open in new tab", SVG.newtab, () => {
-      window.open(href, "_blank", "noopener,noreferrer");
+      window.open(fetchUrl, "_blank", "noopener,noreferrer");
     }));
     if (!peekFull) {
       left.appendChild(iconBtn(
@@ -2189,7 +2304,7 @@ export const RUNTIME_JS = `(() => {
     }, 1800);
 
     try {
-      const res = await fetch(href);
+      const res = await fetch(fetchUrl, { credentials: "same-origin" });
       if (gen !== peekLoadGen) return;
       if (!res.ok) throw new Error("HTTP " + res.status);
       const html = await res.text();
@@ -2226,6 +2341,7 @@ export const RUNTIME_JS = `(() => {
         wrap.innerHTML = main.innerHTML;
       }
       body.appendChild(wrap);
+      normalizeFrozenWidths(body);
       // Re-wire interactive bits inside peek
       wireToggles(body);
       enhanceMedia(body);
@@ -2446,6 +2562,34 @@ export function injectRuntime(
     cursor: zoom-in !important;
     pointer-events: auto !important;
   }
+  .notion-image-block [style*="overflow: hidden"] {
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .notion-record-icon,
+  .notion-record-icon span,
+  [aria-label="Page icon"] {
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Segoe UI Symbol", sans-serif !important;
+    color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
+    -webkit-text-fill-color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
+  }
+  .notion-bookmark-block {
+    max-width: 100% !important;
+    width: 100% !important;
+    overflow: hidden !important;
+  }
+  .notion-bookmark-block a {
+    max-width: 100% !important;
+    width: 100% !important;
+    overflow: hidden !important;
+  }
+  .notion-bookmark-block a > div,
+  .notion-bookmark-block [style*="-webkit-line-clamp"] {
+    min-width: 0 !important;
+    max-width: 100% !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
   .notion-image-block, .notion-image-block [role="figure"] {
     cursor: zoom-in !important;
     pointer-events: auto !important;
@@ -2464,7 +2608,10 @@ export function injectRuntime(
   .notion-dark-theme .notion-toggle-block [role="button"] svg {
     color: #fff !important; fill: #fff !important;
   }
-  .notion-column_list-block > div { flex-wrap: wrap !important; max-width: 100% !important; }
+  .layout, .layout-wide, .layout-content, .notion-page-content, .notion-column_list-block {
+    width: 100% !important; max-width: 100% !important; box-sizing: border-box !important;
+  }
+  .notion-column_list-block > div { flex-wrap: wrap !important; max-width: 100% !important; width: 100% !important; }
   .notion-column_list-block > div > div[style*="opacity: 0"],
   .notion-column_list-block > div > div[style*="width: 46px"] {
     display: none !important; width: 0 !important; height: 0 !important; padding: 0 !important; margin: 0 !important;
@@ -2514,8 +2661,15 @@ export function injectRuntime(
       flex-grow: 1 !important;
       flex-shrink: 1 !important;
     }
-    .layout, .layout-wide, .layout-content {
-      padding-inline: 12px !important;
+    .layout, .layout-wide {
+      padding-inline: 8px !important;
+    }
+    .layout-content, .notion-page-content {
+      padding-inline: 0 !important;
+    }
+    .notion-image-block {
+      width: 100% !important;
+      max-width: 100% !important;
     }
   }
 </style>
