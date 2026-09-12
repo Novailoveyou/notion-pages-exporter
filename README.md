@@ -130,8 +130,9 @@ bunx notion-static-exporter trigger \
 
 Browser (not shipped in the scraped site / npm `dist`): open
 [`tools/sync-trigger.html`](tools/sync-trigger.html) locally. It stores the
-token in `localStorage` and calls the GitHub Actions
-`workflow_dispatch` API — same effect as the CLI.
+token in `localStorage`, dispatches the workflow, then polls the Actions run
+(progress bar + step status) with links to the job, Pages deploy, and site.
+Needs **Actions: Read and write**; optional **Pages: Read** for deploy status.
 
 ### Order of operations
 

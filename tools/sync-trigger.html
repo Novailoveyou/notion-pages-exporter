@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -15,7 +16,9 @@
       --accent: #3b82f6;
       --ok: #22c55e;
       --err: #ef4444;
+      --track: #2a2a2a;
     }
+
     @media (prefers-color-scheme: light) {
       :root {
         --bg: #f6f6f4;
@@ -23,9 +26,14 @@
         --muted: #666;
         --card: #fff;
         --line: #e5e5e5;
+        --track: #ececec;
       }
     }
-    * { box-sizing: border-box; }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
       min-height: 100vh;
@@ -36,16 +44,33 @@
       place-items: center;
       padding: 24px;
     }
+
     main {
-      width: min(440px, 100%);
+      width: min(460px, 100%);
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: 14px;
       padding: 22px;
     }
-    h1 { font-size: 18px; margin: 0 0 6px; }
-    p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
-    label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+
+    h1 {
+      font-size: 18px;
+      margin: 0 0 6px;
+    }
+
+    .lead {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+
     input {
       width: 100%;
       margin: 0 0 14px;
@@ -56,6 +81,7 @@
       color: var(--fg);
       font: inherit;
     }
+
     button {
       width: 100%;
       border: 0;
@@ -67,26 +93,145 @@
       color: #fff;
       cursor: pointer;
     }
-    button:disabled { opacity: 0.55; cursor: wait; }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+
+    code {
+      font-size: 12px;
+    }
+
+    #panel {
+      display: none;
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+
+    #panel.on {
+      display: block;
+    }
+
+    .phase {
+      font-size: 13px;
+      margin: 0 0 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .phase strong {
+      font-weight: 600;
+    }
+
+    .phase .pct {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--track);
+      overflow: hidden;
+      margin: 0 0 10px;
+    }
+
+    .bar>i {
+      display: block;
+      height: 100%;
+      width: 0%;
+      border-radius: inherit;
+      background: var(--accent);
+      transition: width .2s linear;
+    }
+
+    .bar.indeterminate>i {
+      width: 40% !important;
+      animation: slide 1.1s ease-in-out infinite;
+    }
+
+    .bar.ok>i {
+      background: var(--ok);
+    }
+
+    .bar.err>i {
+      background: var(--err);
+      width: 100% !important;
+    }
+
+    @keyframes slide {
+      0% {
+        transform: translateX(-120%);
+      }
+
+      100% {
+        transform: translateX(280%);
+      }
+    }
+
+    .detail {
+      font-size: 12px;
+      color: var(--muted);
+      min-height: 1.3em;
+      margin: 0 0 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .links {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .links a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+      word-break: break-all;
+    }
+
+    .links a:hover {
+      text-decoration: underline;
+    }
+
+    .links a[aria-disabled="true"] {
+      color: var(--muted);
+      pointer-events: none;
+      text-decoration: none;
+    }
+
     #status {
-      margin-top: 14px;
+      margin-top: 12px;
       font-size: 13px;
       min-height: 1.2em;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    #status.ok { color: var(--ok); }
-    #status.err { color: var(--err); }
-    code { font-size: 12px; }
+
+    #status.ok {
+      color: var(--ok);
+    }
+
+    #status.err {
+      color: var(--err);
+    }
   </style>
 </head>
+
 <body>
   <main>
     <h1>Trigger Notion sync</h1>
-    <p>
-      Dispatches <code>workflow_dispatch</code> on your Pages repo.
-      Token stays in <code>localStorage</code> only (never shipped with the site).
-      Prefer a fine-grained PAT with <code>actions: write</code>.
+    <p class="lead">
+      Dispatches <code>workflow_dispatch</code>, then polls the Actions run.
+      Progress is saved in <code>localStorage</code> so a refresh resumes tracking.
+      Fine-grained PAT: <code>Actions: Read and write</code> on the repo
+      (optional <code>Pages: Read</code> for deploy status).
     </p>
 
     <label for="token">GitHub token</label>
@@ -101,7 +246,24 @@
     <label for="ref">Ref</label>
     <input id="ref" type="text" value="main" />
 
+    <label for="site">Site URL (optional)</label>
+    <input id="site" type="url" placeholder="https://elementary.english.orlov.app" />
+
     <button id="run" type="button">Sync Notion now</button>
+
+    <div id="panel">
+      <div class="phase">
+        <strong id="phaseLabel">Idle</strong>
+        <span class="pct" id="pctLabel">—</span>
+      </div>
+      <div class="bar" id="bar"><i id="fill"></i></div>
+      <div class="detail" id="detail"></div>
+      <div class="links">
+        <a id="linkRun" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">GitHub Actions run</a>
+        <a id="linkSite" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">Website</a>
+        <a id="linkPages" href="#" target="_blank" rel="noopener noreferrer" aria-disabled="true">Pages deployment</a>
+      </div>
+    </div>
     <div id="status"></div>
   </main>
   <script>
@@ -110,38 +272,118 @@
       repo: "nsp-gh-repo",
       workflow: "nsp-gh-workflow",
       ref: "nsp-gh-ref",
-    };
+      site: "nsp-gh-site",
+    }
+    const SESSION_KEY = "nsp-gh-sync-session"
 
-    const $ = (id) => document.getElementById(id);
+    const $ = (id) => document.getElementById(id)
+    let tracking = false
+
     for (const [id, key] of Object.entries(KEYS)) {
-      const saved = localStorage.getItem(key);
-      if (saved) $(id).value = saved;
+      const saved = localStorage.getItem(key)
+      if (saved) $(id).value = saved
     }
     if (!$("repo").value) {
-      $("repo").value = "Novailoveyou/elementary.english.orlov.app";
+      $("repo").value = "Novailoveyou/elementary.english.orlov.app"
+    }
+    if (!$("site").value) {
+      $("site").value = guessSite($("repo").value)
+    }
+    $("repo").addEventListener("change", () => {
+      if (!$("site").value.trim()) $("site").value = guessSite($("repo").value)
+    })
+
+    function guessSite(repo) {
+      const name = (repo || "").split("/")[1] || ""
+      if (!name) return ""
+      if (/\./.test(name)) return "https://" + name
+      return ""
     }
 
-    $("run").addEventListener("click", async () => {
-      const token = $("token").value.trim();
-      const repo = $("repo").value.trim();
-      const workflow = $("workflow").value.trim() || "sync-notion.yml";
-      const ref = $("ref").value.trim() || "main";
-      const status = $("status");
-      status.className = "";
-      status.textContent = "";
+    function sleep(ms) {
+      return new Promise((r) => setTimeout(r, ms))
+    }
 
-      if (!token || !repo || !/^[^/]+\/[^/]+$/.test(repo)) {
-        status.className = "err";
-        status.textContent = "Need a token and repo as owner/name.";
-        return;
+    function loadSession() {
+      try {
+        const raw = localStorage.getItem(SESSION_KEY)
+        return raw ? JSON.parse(raw) : null
+      } catch (_) {
+        return null
       }
+    }
 
-      localStorage.setItem(KEYS.token, token);
-      localStorage.setItem(KEYS.repo, repo);
-      localStorage.setItem(KEYS.workflow, workflow);
-      localStorage.setItem(KEYS.ref, ref);
+    function saveSession(patch) {
+      const cur = loadSession() || {}
+      const next = Object.assign({}, cur, patch, { updatedAt: Date.now() })
+      localStorage.setItem(SESSION_KEY, JSON.stringify(next))
+      return next
+    }
 
-      const [owner, name] = repo.split("/");
+    function clearSession() {
+      localStorage.removeItem(SESSION_KEY)
+    }
+
+    function setLink(id, href, label) {
+      const a = $(id)
+      if (href) {
+        a.href = href
+        a.removeAttribute("aria-disabled")
+        if (label) a.textContent = label
+      } else {
+        a.href = "#"
+        a.setAttribute("aria-disabled", "true")
+      }
+    }
+
+    function setProgress({ phase, pct, indeterminate, detail, tone }) {
+      $("panel").classList.add("on")
+      $("phaseLabel").textContent = phase || "Working…"
+      $("pctLabel").textContent =
+        indeterminate || pct == null ? "…" : Math.round(pct) + "%"
+      $("detail").textContent = detail || ""
+      const bar = $("bar")
+      const fill = $("fill")
+      bar.classList.remove("indeterminate", "ok", "err")
+      if (tone === "ok") bar.classList.add("ok")
+      if (tone === "err") bar.classList.add("err")
+      if (indeterminate) {
+        bar.classList.add("indeterminate")
+        fill.style.width = "40%"
+      } else {
+        fill.style.width = Math.max(0, Math.min(100, pct || 0)) + "%"
+      }
+    }
+
+    async function gh(token, url) {
+      const res = await fetch(url, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + token,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      })
+      const text = await res.text()
+      let data = null
+      try {
+        data = text ? JSON.parse(text) : null
+      } catch (_) {
+        data = { message: text }
+      }
+      if (!res.ok) {
+        const msg =
+          (data && (data.message || data.error)) ||
+          text ||
+          res.statusText ||
+          "HTTP " + res.status
+        const err = new Error(msg)
+        err.status = res.status
+        throw err
+      }
+      return data
+    }
+
+    async function dispatch(token, owner, name, workflow, ref) {
       const url =
         "https://api.github.com/repos/" +
         encodeURIComponent(owner) +
@@ -149,38 +391,934 @@
         encodeURIComponent(name) +
         "/actions/workflows/" +
         encodeURIComponent(workflow) +
-        "/dispatches";
-
-      $("run").disabled = true;
-      status.textContent = "Dispatching…";
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: "Bearer " + token,
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ ref }),
-        });
-        if (res.status === 204) {
-          status.className = "ok";
-          status.textContent =
-            "Dispatched " + workflow + " on " + repo + "@" + ref +
-            "\nOpen Actions to watch the run.";
-        } else {
-          const body = await res.text();
-          status.className = "err";
-          status.textContent = "HTTP " + res.status + "\n" + (body || res.statusText);
-        }
-      } catch (err) {
-        status.className = "err";
-        status.textContent = String(err && err.message ? err.message : err);
-      } finally {
-        $("run").disabled = false;
+        "/dispatches"
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: "Bearer " + token,
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ref }),
+      })
+      if (res.status !== 204) {
+        const body = await res.text()
+        throw new Error("HTTP " + res.status + (body ? "\n" + body : ""))
       }
+    }
+
+    async function listWorkflowRuns(token, owner, name, workflow) {
+      const names = []
+      const raw = (workflow || "").trim()
+      if (raw) {
+        names.push(raw)
+        if (!raw.includes("/")) names.push(".github/workflows/" + raw)
+      }
+      const seen = new Set()
+      for (const wf of names) {
+        if (seen.has(wf)) continue
+        seen.add(wf)
+        try {
+          const data = await gh(
+            token,
+            "https://api.github.com/repos/" +
+            encodeURIComponent(owner) +
+            "/" +
+            encodeURIComponent(name) +
+            "/actions/workflows/" +
+            encodeURIComponent(wf) +
+            "/runs?per_page=15",
+          )
+          if (data && Array.isArray(data.workflow_runs)) {
+            return data.workflow_runs
+          }
+        } catch (err) {
+          if (err && err.status === 404) continue
+          throw err
+        }
+      }
+      // Repo-wide fallback (still works if workflow path casing differs)
+      const data = await gh(
+        token,
+        "https://api.github.com/repos/" +
+        encodeURIComponent(owner) +
+        "/" +
+        encodeURIComponent(name) +
+        "/actions/runs?per_page=15&event=workflow_dispatch",
+      )
+      return (data && data.workflow_runs) || []
+    }
+
+    function pickNewRun(runs, beforeIds, sinceMs) {
+      const list = runs || []
+      const isActive = (r) =>
+        r.status === "queued" ||
+        r.status === "in_progress" ||
+        r.status === "waiting" ||
+        r.status === "pending" ||
+        r.status === "requested"
+
+      // Best: a run id we did not see before dispatch
+      const created = list.find((r) => beforeIds && !beforeIds.has(r.id))
+      if (created) return created
+
+      // Next: any active run started recently (wide slack for clock skew)
+      const recentActive = list.find((r) => {
+        if (!isActive(r)) return false
+        const t = Date.parse(r.created_at || r.run_started_at || 0)
+        return !sinceMs || t >= sinceMs - 10 * 60 * 1000 || isActive(r)
+      })
+      if (recentActive) return recentActive
+
+      // Last: newest run within 10 minutes of dispatch
+      const recent = list.find((r) => {
+        const t = Date.parse(r.created_at || r.run_started_at || 0)
+        return t >= sinceMs - 10 * 60 * 1000
+      })
+      return recent || null
+    }
+
+    async function findRun(token, owner, name, workflow, sinceMs, beforeIds) {
+      const runs = await listWorkflowRuns(token, owner, name, workflow)
+      return pickNewRun(runs, beforeIds, sinceMs)
+    }
+
+    async function getRun(token, owner, name, runId) {
+      return gh(
+        token,
+        "https://api.github.com/repos/" +
+        encodeURIComponent(owner) +
+        "/" +
+        encodeURIComponent(name) +
+        "/actions/runs/" +
+        runId,
+      )
+    }
+
+    async function getJobs(token, owner, name, runId) {
+      return gh(
+        token,
+        "https://api.github.com/repos/" +
+        encodeURIComponent(owner) +
+        "/" +
+        encodeURIComponent(name) +
+        "/actions/runs/" +
+        runId +
+        "/jobs",
+      )
+    }
+
+    function stepWeight(name) {
+      const n = name || ""
+      if (/scrape|notion/i.test(n)) return 72
+      if (/chrome/i.test(n)) return 8
+      if (/commit|push/i.test(n)) return 7
+      if (/bun|setup/i.test(n)) return 5
+      if (/cache/i.test(n)) return 3
+      if (/checkout/i.test(n)) return 3
+      return 4
+    }
+
+    function stepEtaMs(name) {
+      const n = name || ""
+      if (/scrape|notion/i.test(n)) return 7 * 60 * 1000
+      if (/chrome/i.test(n)) return 75_000
+      if (/commit|push/i.test(n)) return 40_000
+      if (/bun|setup/i.test(n)) return 50_000
+      if (/cache/i.test(n)) return 25_000
+      if (/checkout/i.test(n)) return 20_000
+      return 45_000
+    }
+
+    /** Asymptotic 0→1 so a long step keeps moving without hitting 100% early. */
+    function withinStepFrac(elapsedMs, etaMs) {
+      const t = Math.max(0, elapsedMs) / Math.max(1, etaMs)
+      return 1 - Math.exp(-2.2 * t)
+    }
+
+    function summarizeJobs(jobsPayload, nowMs) {
+      const now = nowMs || Date.now()
+      const jobs = (jobsPayload && jobsPayload.jobs) || []
+      if (!jobs.length) {
+        return {
+          pct: 4,
+          detail: "Waiting for job…",
+          step: null,
+          done: 0,
+          total: 0,
+        }
+      }
+      const job = jobs[0]
+      const steps = job.steps || []
+      if (!steps.length) {
+        const status = job.status || "queued"
+        const started = Date.parse(job.started_at || 0)
+        const elapsed = started ? now - started : 0
+        const pct =
+          status === "completed"
+            ? 100
+            : status === "in_progress"
+              ? Math.min(28, 8 + withinStepFrac(elapsed, 3 * 60 * 1000) * 22)
+              : 6
+        return {
+          pct,
+          detail: "Job " + status.replace(/_/g, " "),
+          step: null,
+          done: 0,
+          total: 0,
+        }
+      }
+
+      const weights = steps.map((s) => stepWeight(s.name))
+      const totalW = weights.reduce((a, b) => a + b, 0) || 1
+      let earned = 0
+      let active = null
+      let activeIdx = -1
+
+      steps.forEach((s, i) => {
+        if (s.status === "completed") earned += weights[i]
+        else if (s.status === "in_progress" && activeIdx < 0) {
+          active = s
+          activeIdx = i
+        }
+      })
+
+      if (activeIdx >= 0) {
+        const started = Date.parse(
+          active.started_at || job.started_at || 0,
+        )
+        const elapsed = started ? Math.max(0, now - started) : 0
+        const frac = withinStepFrac(elapsed, stepEtaMs(active.name))
+        // Leave a little headroom so completing the step still bumps the bar
+        earned += weights[activeIdx] * Math.min(0.94, frac)
+      }
+
+      let pct = (earned / totalW) * 100
+
+      // Floor from overall job age so API lag doesn't freeze the bar
+      const jobStarted = Date.parse(job.started_at || 0)
+      if (jobStarted && job.status === "in_progress") {
+        const jobElapsed = now - jobStarted
+        const floor = Math.min(88, 6 + withinStepFrac(jobElapsed, 9 * 60 * 1000) * 82)
+        pct = Math.max(pct, floor)
+      }
+
+      pct = Math.max(2, Math.min(96, pct))
+      const done = steps.filter((s) => s.status === "completed").length
+      const total = steps.length
+      const detail = active
+        ? "Step: " + active.name
+        : done === total
+          ? "All steps finished"
+          : "Completed " + done + " / " + total + " steps"
+
+      return {
+        pct,
+        detail,
+        step: active && active.name,
+        done,
+        total,
+        steps,
+        job,
+      }
+    }
+
+    async function getPagesLatest(token, owner, name) {
+      try {
+        return await gh(
+          token,
+          "https://api.github.com/repos/" +
+          encodeURIComponent(owner) +
+          "/" +
+          encodeURIComponent(name) +
+          "/pages/builds/latest",
+        )
+      } catch (err) {
+        if (err && err.status === 404) return null
+        if (err && err.status === 403) return { forbidden: true }
+        return null
+      }
+    }
+
+    async function getRecentPagesBuilds(token, owner, name) {
+      try {
+        return await gh(
+          token,
+          "https://api.github.com/repos/" +
+          encodeURIComponent(owner) +
+          "/" +
+          encodeURIComponent(name) +
+          "/pages/builds?per_page=5",
+        )
+      } catch (err) {
+        if (err && err.status === 403) return { forbidden: true }
+        return null
+      }
+    }
+
+    async function getLatestPagesDeployment(token, owner, name, afterMs) {
+      try {
+        const list = await gh(
+          token,
+          "https://api.github.com/repos/" +
+          encodeURIComponent(owner) +
+          "/" +
+          encodeURIComponent(name) +
+          "/deployments?environment=github-pages&per_page=5",
+        )
+        const deps = Array.isArray(list) ? list : []
+        const dep = deps.find((d) => {
+          const t = Date.parse(d.created_at || d.updated_at || 0)
+          return t >= afterMs - 60_000
+        }) || deps[0]
+        if (!dep) return null
+        const statuses = await gh(
+          token,
+          "https://api.github.com/repos/" +
+          encodeURIComponent(owner) +
+          "/" +
+          encodeURIComponent(name) +
+          "/deployments/" +
+          dep.id +
+          "/statuses",
+        )
+        const st = Array.isArray(statuses) && statuses[0] ? statuses[0] : null
+        return {
+          dep,
+          state: (st && st.state) || "",
+          envUrl: (st && st.environment_url) || (st && st.target_url) || "",
+          logUrl: (st && st.log_url) || dep.url,
+        }
+      } catch (_) {
+        return null
+      }
+    }
+
+    function buildIsFresh(build, afterMs) {
+      if (!build || !build.created_at) return false
+      const created = Date.parse(build.created_at)
+      const updated = Date.parse(build.updated_at || build.created_at)
+      // Any build started/updated after we dispatched (with slack)
+      return created >= afterMs - 60_000 || updated >= afterMs - 30_000
+    }
+
+    async function waitForPages(token, owner, name, afterMs, siteUrl) {
+      setLink(
+        "linkPages",
+        "https://github.com/" + owner + "/" + name + "/deployments",
+        "Pages / deployments",
+      )
+      if (siteUrl) setLink("linkSite", siteUrl, "Open site · " + siteUrl)
+
+      const maxPolls = 24 // ~36s at 1.5s
+      for (let i = 0; i < maxPolls; i++) {
+        const pct = Math.min(99, 93 + Math.round((i / maxPolls) * 6))
+        setProgress({
+          phase: "Deploying Pages…",
+          pct,
+          detail: "Checking GitHub Pages deploy…",
+          tone: "ok",
+        })
+
+        const latest = await getPagesLatest(token, owner, name)
+        if (latest && latest.forbidden) {
+          setProgress({
+            phase: "Done",
+            pct: 100,
+            detail:
+              "Actions finished. Enable Pages: Read on the token to track deploy status.",
+            tone: "ok",
+          })
+          return "unknown"
+        }
+
+        let builds = latest && latest.created_at ? [latest] : []
+        const list = await getRecentPagesBuilds(token, owner, name)
+        if (list && list.forbidden) {
+          setProgress({
+            phase: "Done",
+            pct: 100,
+            detail:
+              "Actions finished. Enable Pages: Read on the token to track deploy status.",
+            tone: "ok",
+          })
+          return "unknown"
+        }
+        if (Array.isArray(list) && list.length) builds = list
+
+        const freshBuild = builds.find((b) => buildIsFresh(b, afterMs))
+        if (freshBuild) {
+          const st = (freshBuild.status || "").toLowerCase()
+          setLink(
+            "linkPages",
+            freshBuild.url ||
+            "https://github.com/" + owner + "/" + name + "/deployments",
+            "Pages build · " + (st || "unknown"),
+          )
+          if (st === "built") {
+            setProgress({
+              phase: "Done",
+              pct: 100,
+              detail: "Pages build completed",
+              tone: "ok",
+            })
+            return "built"
+          }
+          if (st === "errored" || st === "failed") {
+            setProgress({
+              phase: "Pages build failed",
+              pct: 100,
+              detail:
+                freshBuild.error && freshBuild.error.message
+                  ? freshBuild.error.message
+                  : "See deployments on GitHub",
+              tone: "err",
+            })
+            return "failed"
+          }
+          setProgress({
+            phase: "Deploying Pages…",
+            pct,
+            detail: "Pages status: " + (st || "building"),
+            tone: "ok",
+          })
+        }
+
+        // Actions-based Pages deployments (common on modern repos)
+        const dep = await getLatestPagesDeployment(token, owner, name, afterMs)
+        if (dep) {
+          const state = (dep.state || "").toLowerCase()
+          if (dep.envUrl) setLink("linkSite", dep.envUrl, "Open site · " + dep.envUrl)
+          else if (siteUrl) setLink("linkSite", siteUrl, "Open site · " + siteUrl)
+          setLink(
+            "linkPages",
+            dep.logUrl ||
+            "https://github.com/" + owner + "/" + name + "/deployments",
+            "Pages deployment · " + (state || "pending"),
+          )
+          if (state === "success") {
+            setProgress({
+              phase: "Done",
+              pct: 100,
+              detail: "Pages deployment succeeded",
+              tone: "ok",
+            })
+            return "built"
+          }
+          if (state === "failure" || state === "error") {
+            setProgress({
+              phase: "Pages deploy failed",
+              pct: 100,
+              detail: "See deployments on GitHub",
+              tone: "err",
+            })
+            return "failed"
+          }
+        }
+
+        await sleep(5000)
+      }
+
+      setProgress({
+        phase: "Done",
+        pct: 100,
+        detail:
+          "Actions finished. Pages looks ready — open the site link above.",
+        tone: "ok",
+      })
+      return "timeout"
+    }
+
+    async function monitorRun({
+      token,
+      owner,
+      name,
+      siteUrl,
+      since,
+      run,
+    }) {
+      const status = $("status")
+      setLink(
+        "linkRun",
+        run.html_url,
+        "GitHub Actions run · #" + run.run_number,
+      )
+      saveSession({
+        phase: "running",
+        runId: run.id,
+        runNumber: run.run_number,
+        runUrl: run.html_url,
+        owner,
+        name,
+        siteUrl,
+        since,
+        statusText: "Tracking run #" + run.run_number,
+      })
+
+      let lastJobs = null
+      let lastFresh = null
+      let stopTicker = false
+      const tick = () => {
+        if (stopTicker || !lastFresh || lastFresh.status !== "in_progress") return
+        const summary = summarizeJobs(lastJobs, Date.now())
+        setProgress({
+          phase: "Syncing…",
+          pct: summary.pct,
+          detail:
+            "Run #" +
+            lastFresh.run_number +
+            (summary.total
+              ? " · " + summary.done + "/" + summary.total + " steps"
+              : "") +
+            "\n" +
+            summary.detail,
+        })
+      }
+      const ticker = setInterval(tick, 250)
+
+      try {
+        for (; ;) {
+          const fresh = await getRun(token, owner, name, run.id)
+          let jobsPayload = lastJobs
+          try {
+            jobsPayload = await getJobs(token, owner, name, run.id)
+            lastJobs = jobsPayload
+          } catch (_) { }
+          lastFresh = fresh
+          const summary = summarizeJobs(jobsPayload, Date.now())
+          const rs = fresh.status
+          const rc = fresh.conclusion
+
+          saveSession({
+            phase: rs === "completed" ? "finishing" : "running",
+            runUrl: fresh.html_url,
+            runNumber: fresh.run_number,
+            conclusion: rc || "",
+          })
+
+          if (rs === "queued" || rs === "waiting" || rs === "pending") {
+            setProgress({
+              phase: "Queued",
+              indeterminate: true,
+              detail: "Run #" + fresh.run_number + " is waiting for a runner",
+            })
+          } else if (rs === "in_progress") {
+            setProgress({
+              phase: "Syncing…",
+              pct: summary.pct,
+              detail:
+                "Run #" +
+                fresh.run_number +
+                (summary.total
+                  ? " · " + summary.done + "/" + summary.total + " steps"
+                  : "") +
+                "\n" +
+                summary.detail,
+            })
+          } else if (rs === "completed") {
+            stopTicker = true
+            clearInterval(ticker)
+            if (rc === "success") {
+              setProgress({
+                phase: "Actions succeeded",
+                pct: 93,
+                detail:
+                  "Run #" +
+                  fresh.run_number +
+                  " completed — checking Pages…",
+                tone: "ok",
+              })
+              status.className = "ok"
+              status.textContent = "Sync workflow finished successfully."
+              saveSession({ phase: "pages", statusText: status.textContent })
+
+              const deploy = await waitForPages(
+                token,
+                owner,
+                name,
+                since,
+                siteUrl,
+              )
+              const donePhase =
+                deploy === "failed" ? "Pages deploy failed" : "Done"
+              const doneDetail =
+                deploy === "built"
+                  ? "Synced and Pages deployed"
+                  : deploy === "failed"
+                    ? "Sync commit ok; Pages deploy failed — see link above"
+                    : "Synced. Open the site link above."
+              setProgress({
+                phase: donePhase,
+                pct: 100,
+                detail: doneDetail,
+                tone: deploy === "failed" ? "err" : "ok",
+              })
+              if (deploy === "built") {
+                status.textContent =
+                  "Synced and Pages deployed.\n" +
+                  (siteUrl ? siteUrl : "Open the site link above.")
+              } else if (deploy === "failed") {
+                status.className = "err"
+                status.textContent =
+                  "Sync commit succeeded, but Pages build failed. Check deployments."
+              } else {
+                status.textContent =
+                  "Sync workflow succeeded." +
+                  (siteUrl ? "\nSite: " + siteUrl : "")
+              }
+              saveSession({
+                phase: deploy === "failed" ? "failed" : "done",
+                statusText: status.textContent,
+                deploy,
+              })
+              return
+            }
+
+            setProgress({
+              phase: rc === "cancelled" ? "Cancelled" : "Failed",
+              pct: 100,
+              detail:
+                "Run #" +
+                fresh.run_number +
+                " · " +
+                (rc || "failed") +
+                "\nSee the Actions log for details.",
+              tone: "err",
+            })
+            status.className = "err"
+            status.textContent =
+              "Workflow " + (rc || "failed") + ".\n" + fresh.html_url
+            saveSession({
+              phase: "failed",
+              statusText: status.textContent,
+              conclusion: rc || "failed",
+            })
+            return
+          } else {
+            setProgress({
+              phase: rs || "Running",
+              indeterminate: true,
+              detail: "Run #" + fresh.run_number,
+            })
+          }
+
+          await sleep(1000)
+        }
+      } finally {
+        stopTicker = true
+        clearInterval(ticker)
+      }
+    }
+
+    async function startOrResumeSync(opts) {
+      if (tracking) return
+      tracking = true
+      $("run").disabled = true
+      const status = $("status")
+
+      const token = opts.token
+      const repo = opts.repo
+      const workflow = opts.workflow || "sync-notion.yml"
+      const ref = opts.ref || "main"
+      const siteUrl = (opts.siteUrl || "").replace(/\/$/, "")
+      const [owner, name] = repo.split("/")
+      const actionsUrl =
+        "https://github.com/" + owner + "/" + name + "/actions"
+      let since = opts.since || Date.now()
+      let run = opts.run || null
+
+      setLink("linkRun", (run && run.html_url) || actionsUrl, run
+        ? "GitHub Actions run · #" + run.run_number
+        : "GitHub Actions")
+      setLink(
+        "linkSite",
+        siteUrl || null,
+        siteUrl ? "Open site · " + siteUrl : "Website",
+      )
+      if (!opts.resume) setLink("linkPages", null)
+
+      try {
+        if (!run) {
+          status.className = ""
+          status.textContent = ""
+          setProgress({
+            phase: "Dispatching…",
+            indeterminate: true,
+            detail: "workflow_dispatch → " + workflow + " @" + ref,
+          })
+          saveSession({
+            phase: "dispatching",
+            owner,
+            name,
+            repo,
+            workflow,
+            ref,
+            siteUrl,
+            since,
+            statusText: "Dispatching…",
+          })
+
+          let beforeIds = new Set()
+          try {
+            const prior = await listWorkflowRuns(token, owner, name, workflow)
+            beforeIds = new Set(prior.map((r) => r.id))
+          } catch (_) { }
+
+          await dispatch(token, owner, name, workflow, ref)
+          since = opts.since || since
+          saveSession({ phase: "waiting", since })
+
+          setProgress({
+            phase: "Waiting for run…",
+            indeterminate: true,
+            detail: "Looking up the new Actions run",
+          })
+
+          let lastLookupErr = ""
+          for (let i = 0; i < 60 && !run; i++) {
+            await sleep(i === 0 ? 1200 : 1500)
+            try {
+              run = await findRun(
+                token,
+                owner,
+                name,
+                workflow,
+                since,
+                beforeIds,
+              )
+            } catch (err) {
+              lastLookupErr = String(err && err.message ? err.message : err)
+            }
+            if (run) {
+              saveSession({
+                phase: "running",
+                runId: run.id,
+                runNumber: run.run_number,
+                runUrl: run.html_url,
+              })
+            }
+          }
+          if (!run) {
+            // Last chance: any active run for this workflow
+            try {
+              const runs = await listWorkflowRuns(token, owner, name, workflow)
+              run =
+                runs.find(
+                  (r) =>
+                    r.status === "in_progress" ||
+                    r.status === "queued" ||
+                    r.status === "waiting" ||
+                    r.status === "pending",
+                ) || null
+            } catch (_) { }
+          }
+          if (!run) {
+            throw new Error(
+              "Dispatched, but could not match the Actions run yet.\n" +
+              (lastLookupErr ? lastLookupErr + "\n" : "") +
+              "Open Actions: " +
+              actionsUrl,
+            )
+          }
+        }
+
+        await monitorRun({ token, owner, name, siteUrl, since, run })
+      } catch (err) {
+        setProgress({
+          phase: "Error",
+          pct: 100,
+          detail: String(err && err.message ? err.message : err),
+          tone: "err",
+        })
+        status.className = "err"
+        status.textContent = String(err && err.message ? err.message : err)
+        saveSession({
+          phase: "error",
+          statusText: status.textContent,
+        })
+      } finally {
+        tracking = false
+        $("run").disabled = false
+      }
+    }
+
+    $("run").addEventListener("click", async () => {
+      const token = $("token").value.trim()
+      const repo = $("repo").value.trim()
+      const workflow = $("workflow").value.trim() || "sync-notion.yml"
+      const ref = $("ref").value.trim() || "main"
+      const siteUrl = ($("site").value.trim() || guessSite(repo)).replace(
+        /\/$/,
+        "",
+      )
+      const status = $("status")
+
+      if (!token || !repo || !/^[^/]+\/[^/]+$/.test(repo)) {
+        status.className = "err"
+        status.textContent = "Need a token and repo as owner/name."
+        return
+      }
+
+      localStorage.setItem(KEYS.token, token)
+      localStorage.setItem(KEYS.repo, repo)
+      localStorage.setItem(KEYS.workflow, workflow)
+      localStorage.setItem(KEYS.ref, ref)
+      localStorage.setItem(KEYS.site, siteUrl)
+
+      await startOrResumeSync({
+        token,
+        repo,
+        workflow,
+        ref,
+        siteUrl,
+        resume: false,
+      })
+    })
+
+    async function resumeFromSession() {
+      const session = loadSession()
+      if (!session) return
+      const token = $("token").value.trim()
+      const status = $("status")
+
+      const siteUrl =
+        session.siteUrl ||
+        $("site").value.trim() ||
+        guessSite(session.repo || $("repo").value)
+
+      if (session.runUrl) {
+        setLink(
+          "linkRun",
+          session.runUrl,
+          session.runNumber
+            ? "GitHub Actions run · #" + session.runNumber
+            : "GitHub Actions run",
+        )
+      }
+      if (siteUrl) setLink("linkSite", siteUrl, "Open site · " + siteUrl)
+
+      // Finished sessions: restore UI, don't keep polling forever
+      if (
+        session.phase === "done" ||
+        session.phase === "failed" ||
+        session.phase === "error"
+      ) {
+        const age = Date.now() - (session.updatedAt || 0)
+        if (age > 24 * 60 * 60 * 1000) {
+          clearSession()
+          return
+        }
+        setProgress({
+          phase:
+            session.phase === "done"
+              ? "Done"
+              : session.phase === "failed"
+                ? "Failed"
+                : "Error",
+          pct: 100,
+          detail: session.statusText || session.phase,
+          tone: session.phase === "done" ? "ok" : "err",
+        })
+        status.className = session.phase === "done" ? "ok" : "err"
+        status.textContent = session.statusText || ""
+        return
+      }
+
+      if (!token || !session.owner || !session.name) return
+
+      setProgress({
+        phase: "Resuming…",
+        indeterminate: true,
+        detail: session.runNumber
+          ? "Reconnecting to run #" + session.runNumber
+          : "Reconnecting to last sync…",
+      })
+      status.className = ""
+      status.textContent = "Resumed after refresh — checking GitHub…"
+
+      // Prefer tracked run id; else find an active run
+      let run = null
+      if (session.runId) {
+        try {
+          run = await getRun(
+            token,
+            session.owner,
+            session.name,
+            session.runId,
+          )
+        } catch (_) {
+          run = null
+        }
+      }
+      if (!run) {
+        try {
+          const runs = await listWorkflowRuns(
+            token,
+            session.owner,
+            session.name,
+            session.workflow || $("workflow").value.trim() || "sync-notion.yml",
+          )
+          run =
+            runs.find(
+              (r) =>
+                r.status === "in_progress" ||
+                r.status === "queued" ||
+                r.status === "waiting" ||
+                r.status === "pending",
+            ) ||
+            runs[0] ||
+            null
+        } catch (_) { }
+      }
+
+      if (!run) {
+        setProgress({
+          phase: "Error",
+          pct: 100,
+          detail: "Could not resume — open Actions and check the latest run.",
+          tone: "err",
+        })
+        status.className = "err"
+        status.textContent =
+          "Saved sync session found, but no run to resume.\n" +
+          "https://github.com/" +
+          session.owner +
+          "/" +
+          session.name +
+          "/actions"
+        return
+      }
+
+      // If already completed while we were away, jump to finalization
+      if (run.status === "completed") {
+        await monitorRun({
+          token,
+          owner: session.owner,
+          name: session.name,
+          siteUrl,
+          since: session.since || Date.parse(run.created_at) || Date.now(),
+          run,
+        })
+        return
+      }
+
+      await startOrResumeSync({
+        token,
+        repo: session.repo || session.owner + "/" + session.name,
+        workflow: session.workflow || "sync-notion.yml",
+        ref: session.ref || "main",
+        siteUrl,
+        since: session.since || Date.parse(run.created_at) || Date.now(),
+        run,
+        resume: true,
+      })
+    }
+
+    resumeFromSession().catch((err) => {
+      console.warn(err)
     });
   </script>
 </body>
+
 </html>
