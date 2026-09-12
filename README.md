@@ -118,17 +118,20 @@ PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome \
 
 ### Trigger from this machine
 
-After the workflow exists:
+CLI:
 
 ```bash
-export GITHUB_TOKEN=ghp_…   # workflow scope
+export GITHUB_TOKEN=ghp_…   # actions:write
 bunx notion-static-exporter trigger \
   --repo Novailoveyou/elementary.english.orlov.app \
   --workflow sync-notion.yml \
   --ref main
 ```
 
-Same for `english.orlov.app`.
+Browser (not shipped in the scraped site / npm `dist`): open
+[`tools/sync-trigger.html`](tools/sync-trigger.html) locally. It stores the
+token in `localStorage` and calls the GitHub Actions
+`workflow_dispatch` API — same effect as the CLI.
 
 ### Order of operations
 

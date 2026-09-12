@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3
+
+- Default page open mode is fullscreen; ⋮ menu can change default view
+  (fullscreen / side / dialog) and toggle dark/light theme
+- Zoom-in cursor on images; click lightbox image to enlarge / shrink
+- Remove stacked Gallery tab selection overlay; pointer cursor on cards
+- Wire ⋮ menu inside peek; preserve clickability
+- Add `tools/sync-trigger.html` (not in dist) for browser workflow_dispatch
+
 ## 1.0.2
 
 - Fix CI: when syncing with `--out .` (GitHub Actions), preserve `.git` / `.github`

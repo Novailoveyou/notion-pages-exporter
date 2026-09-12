@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sync Notion — workflow trigger</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #111;
+      --fg: #f2f2f2;
+      --muted: #9a9a9a;
+      --card: #1c1c1c;
+      --line: #333;
+      --accent: #3b82f6;
+      --ok: #22c55e;
+      --err: #ef4444;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f6f4;
+        --fg: #171717;
+        --muted: #666;
+        --card: #fff;
+        --line: #e5e5e5;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    main {
+      width: min(440px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 22px;
+    }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+    input {
+      width: 100%;
+      margin: 0 0 14px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--fg);
+      font: inherit;
+    }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      padding: 11px 14px;
+      font: inherit;
+      font-weight: 600;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    #status {
+      margin-top: 14px;
+      font-size: 13px;
+      min-height: 1.2em;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #status.ok { color: var(--ok); }
+    #status.err { color: var(--err); }
+    code { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Trigger Notion sync</h1>
+    <p>
+      Dispatches <code>workflow_dispatch</code> on your Pages repo.
+      Token stays in <code>localStorage</code> only (never shipped with the site).
+      Prefer a fine-grained PAT with <code>actions: write</code>.
+    </p>
+
+    <label for="token">GitHub token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="ghp_… or github_pat_…" />
+
+    <label for="repo">Repository</label>
+    <input id="repo" type="text" placeholder="Novailoveyou/elementary.english.orlov.app" />
+
+    <label for="workflow">Workflow file</label>
+    <input id="workflow" type="text" value="sync-notion.yml" />
+
+    <label for="ref">Ref</label>
+    <input id="ref" type="text" value="main" />
+
+    <button id="run" type="button">Sync Notion now</button>
+    <div id="status"></div>
+  </main>
+  <script>
+    const KEYS = {
+      token: "nsp-gh-token",
+      repo: "nsp-gh-repo",
+      workflow: "nsp-gh-workflow",
+      ref: "nsp-gh-ref",
+    };
+
+    const $ = (id) => document.getElementById(id);
+    for (const [id, key] of Object.entries(KEYS)) {
+      const saved = localStorage.getItem(key);
+      if (saved) $(id).value = saved;
+    }
+    if (!$("repo").value) {
+      $("repo").value = "Novailoveyou/elementary.english.orlov.app";
+    }
+
+    $("run").addEventListener("click", async () => {
+      const token = $("token").value.trim();
+      const repo = $("repo").value.trim();
+      const workflow = $("workflow").value.trim() || "sync-notion.yml";
+      const ref = $("ref").value.trim() || "main";
+      const status = $("status");
+      status.className = "";
+      status.textContent = "";
+
+      if (!token || !repo || !/^[^/]+\/[^/]+$/.test(repo)) {
+        status.className = "err";
+        status.textContent = "Need a token and repo as owner/name.";
+        return;
+      }
+
+      localStorage.setItem(KEYS.token, token);
+      localStorage.setItem(KEYS.repo, repo);
+      localStorage.setItem(KEYS.workflow, workflow);
+      localStorage.setItem(KEYS.ref, ref);
+
+      const [owner, name] = repo.split("/");
+      const url =
+        "https://api.github.com/repos/" +
+        encodeURIComponent(owner) +
+        "/" +
+        encodeURIComponent(name) +
+        "/actions/workflows/" +
+        encodeURIComponent(workflow) +
+        "/dispatches";
+
+      $("run").disabled = true;
+      status.textContent = "Dispatching…";
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: "Bearer " + token,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ ref }),
+        });
+        if (res.status === 204) {
+          status.className = "ok";
+          status.textContent =
+            "Dispatched " + workflow + " on " + repo + "@" + ref +
+            "\nOpen Actions to watch the run.";
+        } else {
+          const body = await res.text();
+          status.className = "err";
+          status.textContent = "HTTP " + res.status + "\n" + (body || res.statusText);
+        }
+      } catch (err) {
+        status.className = "err";
+        status.textContent = String(err && err.message ? err.message : err);
+      } finally {
+        $("run").disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -91,81 +91,206 @@ export const RUNTIME_JS = `(() => {
     for (const el of $$("[data-nsp-install]")) el.remove();
   }
 
-  function wireOriginalMenu() {
+  function menuItemStyle() {
+    return {
+      display: "block",
+      width: "100%",
+      textAlign: "left",
+      padding: "8px 10px",
+      borderRadius: "6px",
+      border: "none",
+      background: "transparent",
+      color: "inherit",
+      textDecoration: "none",
+      fontWeight: "500",
+      fontSize: "14px",
+      fontFamily: "inherit",
+      cursor: "pointer",
+      boxSizing: "border-box",
+    };
+  }
+
+  function hoverable(el) {
+    el.onmouseenter = () => { el.style.background = "rgba(255,255,255,.08)"; };
+    el.onmouseleave = () => { el.style.background = "transparent"; };
+  }
+
+  function currentTheme() {
+    const saved = localStorage.getItem("nsp-theme");
+    if (saved === "dark" || saved === "light") return saved;
+    if (document.querySelector(".notion-light-theme") && !document.querySelector(".notion-dark-theme")) {
+      return "light";
+    }
+    return "dark";
+  }
+
+  function applyTheme(theme) {
+    const next = theme === "light" ? "light" : "dark";
+    localStorage.setItem("nsp-theme", next);
+    const dark = next === "dark";
+    const swap = (el) => {
+      if (!el || !el.classList) return;
+      el.classList.toggle("notion-dark-theme", dark);
+      el.classList.toggle("notion-light-theme", !dark);
+    };
+    swap(document.documentElement);
+    for (const el of $$(
+      ".notion-dark-theme, .notion-light-theme, .notion-app-inner, [data-nsp-peek-root]",
+    )) {
+      swap(el);
+    }
+    // Ensure primary hosts exist
+    const app = document.getElementById("notion-app");
+    if (app) {
+      for (const child of Array.from(app.children)) swap(child);
+    }
+  }
+
+  function peekModeLabel(mode) {
+    if (mode === "side") return "Side panel";
+    if (mode === "center") return "Dialog";
+    return "Fullscreen";
+  }
+
+  function cyclePeekMode() {
+    const order = ["full", "side", "center"];
+    const i = Math.max(0, order.indexOf(peekMode));
+    peekMode = order[(i + 1) % order.length];
+    localStorage.setItem("nsp-peek-mode", peekMode);
+    if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
+    else if (peekRoot) peekRoot.setAttribute("data-mode", peekMode === "full" ? "full" : peekMode);
+    return peekMode;
+  }
+
+  function wireOriginalMenu(scope) {
+    const root = scope || document;
     const original =
       document.documentElement.getAttribute("data-nsp-original-url") || "";
-    if (!original || original.startsWith("./")) return;
 
-    const btn =
-      $(".notion-topbar [aria-label='More actions']") ||
-      $(".notion-topbar svg.ellipsis")?.closest("[role='button']");
-    if (!btn || btn.dataset.nspWired) return;
-    btn.dataset.nspWired = "1";
+    const btns = new Set();
+    for (const el of $$(".notion-topbar [aria-label='More actions']", root)) {
+      btns.add(el);
+    }
+    for (const svg of $$(".notion-topbar svg.ellipsis", root)) {
+      const b = svg.closest("[role='button']");
+      if (b) btns.add(b);
+    }
 
-    let pop = null;
-    const close = () => {
-      if (pop) { pop.remove(); pop = null; }
-      btn.setAttribute("aria-expanded", "false");
-    };
+    for (const btn of btns) {
+      if (btn.dataset.nspWired) continue;
+      btn.dataset.nspWired = "1";
+      btn.style.pointerEvents = "auto";
+      btn.style.cursor = "pointer";
+      btn.style.zIndex = "20";
 
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (pop) { close(); return; }
-      pop = document.createElement("div");
-      pop.setAttribute("data-nsp-menu", "1");
-      Object.assign(pop.style, {
-        position: "absolute",
-        top: "100%",
-        right: "0",
-        marginTop: "6px",
-        minWidth: "220px",
-        maxWidth: "min(360px, 90vw)",
-        padding: "8px",
-        borderRadius: "10px",
-        background: "var(--c-bacPri, #191919)",
-        color: "var(--c-texPri, #fff)",
-        boxShadow: "0 8px 28px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.08)",
-        zIndex: "10000",
-        fontSize: "14px",
+      let pop = null;
+      const close = () => {
+        if (pop) {
+          pop.remove();
+          pop = null;
+        }
+        btn.setAttribute("aria-expanded", "false");
+      };
+
+      const rebuild = () => {
+        if (!pop) return;
+        pop.innerHTML = "";
+
+        if (original && !original.startsWith("./")) {
+          const link = document.createElement("a");
+          link.href = original;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = "Open original page";
+          Object.assign(link.style, menuItemStyle());
+          hoverable(link);
+          const url = document.createElement("div");
+          url.textContent = original;
+          Object.assign(url.style, {
+            padding: "0 10px 8px",
+            opacity: "0.55",
+            fontSize: "12px",
+            wordBreak: "break-all",
+            lineHeight: "1.35",
+          });
+          pop.appendChild(link);
+          pop.appendChild(url);
+        }
+
+        const viewBtn = document.createElement("button");
+        viewBtn.type = "button";
+        viewBtn.textContent = "Default view: " + peekModeLabel(peekMode);
+        Object.assign(viewBtn.style, menuItemStyle());
+        hoverable(viewBtn);
+        viewBtn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          cyclePeekMode();
+          viewBtn.textContent = "Default view: " + peekModeLabel(peekMode);
+        });
+        pop.appendChild(viewBtn);
+
+        const themeBtn = document.createElement("button");
+        themeBtn.type = "button";
+        const theme = currentTheme();
+        themeBtn.textContent =
+          theme === "dark" ? "Theme: Dark (switch to Light)" : "Theme: Light (switch to Dark)";
+        Object.assign(themeBtn.style, menuItemStyle());
+        hoverable(themeBtn);
+        themeBtn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const next = currentTheme() === "dark" ? "light" : "dark";
+          applyTheme(next);
+          themeBtn.textContent =
+            next === "dark"
+              ? "Theme: Dark (switch to Light)"
+              : "Theme: Light (switch to Dark)";
+        });
+        pop.appendChild(themeBtn);
+      };
+
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (pop) {
+          close();
+          return;
+        }
+        pop = document.createElement("div");
+        pop.setAttribute("data-nsp-menu", "1");
+        Object.assign(pop.style, {
+          position: "absolute",
+          top: "100%",
+          right: "0",
+          marginTop: "6px",
+          minWidth: "240px",
+          maxWidth: "min(360px, 90vw)",
+          padding: "8px",
+          borderRadius: "10px",
+          background: "var(--c-bacPri, #191919)",
+          color: "var(--c-texPri, #fff)",
+          boxShadow:
+            "0 8px 28px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.08)",
+          zIndex: "10000",
+          fontSize: "14px",
+        });
+        rebuild();
+        const host = btn.closest(".xjp7ctv") || btn.parentElement || btn;
+        if (getComputedStyle(host).position === "static") {
+          host.style.position = "relative";
+        }
+        host.style.zIndex = "30";
+        host.appendChild(pop);
+        btn.setAttribute("aria-expanded", "true");
       });
-      const link = document.createElement("a");
-      link.href = original;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = "Open original page";
-      Object.assign(link.style, {
-        display: "block",
-        padding: "8px 10px",
-        borderRadius: "6px",
-        color: "inherit",
-        textDecoration: "none",
-        fontWeight: "500",
-      });
-      link.onmouseenter = () => { link.style.background = "rgba(255,255,255,.08)"; };
-      link.onmouseleave = () => { link.style.background = "transparent"; };
-      const url = document.createElement("div");
-      url.textContent = original;
-      Object.assign(url.style, {
-        padding: "4px 10px 8px",
-        opacity: "0.55",
-        fontSize: "12px",
-        wordBreak: "break-all",
-        lineHeight: "1.35",
-      });
-      pop.appendChild(link);
-      pop.appendChild(url);
-      const host = btn.closest(".xjp7ctv") || btn.parentElement || btn;
-      if (getComputedStyle(host).position === "static") host.style.position = "relative";
-      host.appendChild(pop);
-      btn.setAttribute("aria-expanded", "true");
-    });
 
-    document.addEventListener("click", (e) => {
-      if (!pop) return;
-      if (pop.contains(e.target) || btn.contains(e.target)) return;
-      close();
-    });
+      document.addEventListener("click", (e) => {
+        if (!pop) return;
+        if (pop.contains(e.target) || btn.contains(e.target)) return;
+        close();
+      });
+    }
   }
 
   function filterItems(root, q) {
@@ -551,21 +676,14 @@ export const RUNTIME_JS = `(() => {
   }
 
   function styleTab(tab, selected) {
+    // Mark selection only — do not paint a second background over Notion's own tab chrome
     const targets = [tab, ...$$('[role="tab"], .notion-collection-view-tab', tab)];
     for (const el of targets) {
       el.setAttribute("aria-selected", selected ? "true" : "false");
-      if (selected) {
-        el.setAttribute("data-nsp-active", "1");
-        el.style.background = "var(--ca-graBacSecTra, rgba(255,255,255,.1))";
-        el.style.color = "var(--c-texPri, inherit)";
-        const svg = el.querySelector("svg");
-        if (svg) svg.style.fill = "var(--c-texPri, currentColor)";
-      } else {
-        el.removeAttribute("data-nsp-active");
-        el.style.background = "";
-        const svg = el.querySelector("svg");
-        if (svg) svg.style.fill = "var(--c-texSec, currentColor)";
-      }
+      if (selected) el.setAttribute("data-nsp-active", "1");
+      else el.removeAttribute("data-nsp-active");
+      // Clear leftovers from older runtime versions
+      el.style.background = "";
     }
   }
 
@@ -1231,7 +1349,34 @@ export const RUNTIME_JS = `(() => {
     big.alt = (img && img.alt) || "";
     big.style.cssText =
       "display:block;max-width:96vw;max-height:78vh;width:auto;height:auto;" +
-      "object-fit:contain;border-radius:6px;background:#1a1a1a;";
+      "object-fit:contain;border-radius:6px;background:#1a1a1a;cursor:zoom-in;";
+    let enlarged = false;
+    big.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      enlarged = !enlarged;
+      if (enlarged) {
+        overlay.style.overflow = "auto";
+        overlay.style.alignItems = "flex-start";
+        overlay.style.justifyContent = "flex-start";
+        panel.style.maxWidth = "none";
+        panel.style.maxHeight = "none";
+        big.style.maxWidth = "none";
+        big.style.maxHeight = "none";
+        big.style.width = "auto";
+        big.style.height = "auto";
+        big.style.cursor = "zoom-out";
+      } else {
+        overlay.style.overflow = "";
+        overlay.style.alignItems = "center";
+        overlay.style.justifyContent = "center";
+        panel.style.maxWidth = "min(1200px,96vw)";
+        panel.style.maxHeight = "88vh";
+        big.style.maxWidth = "96vw";
+        big.style.maxHeight = "78vh";
+        big.style.cursor = "zoom-in";
+      }
+    });
 
     const nav = document.createElement("div");
     nav.style.cssText =
@@ -1416,19 +1561,25 @@ export const RUNTIME_JS = `(() => {
       .notion-image-block * {
         pointer-events: auto !important;
       }
+      .notion-cursor-listener .notion-image-block,
+      .notion-cursor-listener .notion-image-block *,
+      .notion-image-block,
+      .notion-image-block [role="figure"],
+      .notion-image-block [data-content-editable-void],
+      .notion-image-block img,
+      .notion-page-content .notion-image-block img,
+      [data-nsp-peek-body] .notion-image-block img,
+      .nsp-peek-content .notion-image-block img,
+      img[data-nsp-zoom="1"] {
+        cursor: zoom-in !important;
+      }
       .notion-image-block img,
       .notion-page-content .notion-image-block img,
       [data-nsp-peek-body] .notion-image-block img,
       .nsp-peek-content .notion-image-block img,
       img[data-nsp-zoom="1"] {
         max-width: 100% !important;
-        cursor: zoom-in !important;
         pointer-events: auto !important;
-      }
-      .notion-image-block,
-      .notion-image-block [role="figure"],
-      .notion-image-block [data-content-editable-void] {
-        cursor: zoom-in !important;
       }
       .notion-image-block img,
       [data-nsp-peek-body] .notion-image-block img,
@@ -1523,11 +1674,17 @@ export const RUNTIME_JS = `(() => {
         background: var(--c-bacPri, inherit);
         min-height: 40vh;
       }
-      .notion-collection-view-tab[data-nsp-active="1"],
-      .notion-collection-view-tab[aria-selected="true"],
-      .notion-collection-view-tab-button[data-nsp-active="1"],
-      .notion-collection-view-tab-button [aria-selected="true"] {
-        background: var(--ca-graBacSecTra, rgba(255,255,255,.1)) !important;
+      /* Selection is Notion's own tab chrome — don't stack a second overlay */
+      .notion-collection-view-tab-button,
+      .notion-collection-view-tab,
+      [role="tab"].notion-collection-view-tab {
+        cursor: pointer !important;
+        pointer-events: auto !important;
+      }
+      .notion-collection-item,
+      .notion-gallery-view .notion-page-block,
+      .notion-collection-item a {
+        cursor: pointer !important;
       }
       /* Notion print CSS often hides chrome — keep breadcrumbs visible */
       .notion-topbar {
@@ -1537,6 +1694,12 @@ export const RUNTIME_JS = `(() => {
         height: 44px !important;
         z-index: 10;
         position: relative;
+      }
+      .notion-topbar [aria-label="More actions"],
+      .notion-topbar [data-nsp-topbar-right] {
+        pointer-events: auto !important;
+        cursor: pointer !important;
+        z-index: 20;
       }
       header {
         display: block !important;
@@ -1550,12 +1713,6 @@ export const RUNTIME_JS = `(() => {
         top: 0;
         z-index: 5;
         background: var(--c-bacPri, #191919);
-      }
-      .notion-collection-view-tab-button,
-      .notion-collection-view-tab,
-      [role="tab"].notion-collection-view-tab {
-        cursor: pointer !important;
-        pointer-events: auto !important;
       }
       .notion-toggle-block [role="button"],
       .notion-toggle-block [data-content-editable-leaf],
@@ -1810,7 +1967,7 @@ export const RUNTIME_JS = `(() => {
   }
 
   /* ── Side peek ─────────────────────────────────────────── */
-  let peekMode = localStorage.getItem("nsp-peek-mode") || "side";
+  let peekMode = localStorage.getItem("nsp-peek-mode") || "full";
   let peekRoot = null;
   let peekCurrentHref = "";
   let peekFull = false;
@@ -1897,36 +2054,38 @@ export const RUNTIME_JS = `(() => {
       return;
     }
     peekFull = false;
-    if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
+    // If fullscreen is the saved default, exiting closes peek (back to gallery)
+    if (peekMode === "full") closePeek();
+    else if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
     else closePeek();
   }
 
   function enterFullPeek(href) {
-    if (peekFull) return;
-    peekFull = true;
-    try {
-      history.pushState({ nspPeekFull: true, href }, "", href);
-      peekHistoryPushed = true;
-    } catch (_) {
-      peekHistoryPushed = false;
-    }
-    openPeek(href);
+    openPeek(href, "full");
   }
 
   function restorePeekAfterFull() {
     peekFull = false;
     peekHistoryPushed = false;
-    if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
+    if (peekMode === "full") closePeek();
+    else if (peekCurrentHref) openPeek(peekCurrentHref, peekMode);
     else closePeek();
   }
 
   async function openPeek(href, mode) {
-    if (mode === "full") {
-      enterFullPeek(href);
-      return;
-    }
-    if (mode === "side" || mode === "center") {
-      peekMode = mode;
+    const requested = mode || peekMode || "full";
+    if (requested === "full") {
+      if (!peekFull) {
+        peekFull = true;
+        try {
+          history.pushState({ nspPeekFull: true, href }, "", href);
+          peekHistoryPushed = true;
+        } catch (_) {
+          peekHistoryPushed = false;
+        }
+      }
+    } else if (requested === "side" || requested === "center") {
+      peekMode = requested;
       localStorage.setItem("nsp-peek-mode", peekMode);
       peekFull = false;
     }
@@ -2016,6 +2175,7 @@ export const RUNTIME_JS = `(() => {
       wireCollectionsIn(body, captures);
       padCollectionToolbars();
       layoutTopbar();
+      wireOriginalMenu(body);
       // Internal links inside peek open in peek (keep fullscreen if active)
       body.onclick = (e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -2081,10 +2241,7 @@ export const RUNTIME_JS = `(() => {
       if (a.closest("[data-nsp-peek-bar], [data-nsp-menu], [data-nsp-card-actions]")) return;
       const href = a.getAttribute("href") || "";
       if (!isLocalHtmlHref(href)) return;
-      const isCollection = a.closest(
-        ".notion-collection-item, .notion-gallery-view, .notion-table-view, .notion-board-view, .notion-calendar-view, .notion-list-view, .notion-collection_view-block, .notion-collection_view_page-block",
-      );
-      if (!isCollection) return;
+      // Open every internal page with the user's default view (fullscreen by default)
       e.preventDefault();
       e.stopPropagation();
       openPeek(href.split("#")[0] || href);
@@ -2124,12 +2281,16 @@ export const RUNTIME_JS = `(() => {
 
   function boot() {
     injectStyles();
+    try {
+      applyTheme(currentTheme());
+    } catch (_) {}
     registerPwa();
     loadAssetMap();
     syncViewport();
     hidePromos();
     wireOriginalMenu();
     layoutTopbar();
+    wireOriginalMenu();
     wireToggles(document);
     wireToc();
     wireLightbox();
@@ -2258,9 +2419,18 @@ export function injectRuntime(
     background: var(--c-bacPri, inherit);
     min-height: 40vh;
   }
-  .notion-collection-view-tab[data-nsp-active="1"],
-  .notion-collection-view-tab[aria-selected="true"] {
-    background: var(--ca-graBacSecTra, rgba(255,255,255,.1)) !important;
+  .notion-collection-view-tab-button,
+  .notion-collection-view-tab {
+    cursor: pointer !important;
+  }
+  .notion-collection-item,
+  .notion-collection-item a {
+    cursor: pointer !important;
+  }
+  .notion-image-block,
+  .notion-image-block img,
+  img[data-nsp-zoom="1"] {
+    cursor: zoom-in !important;
   }
   .notion-toggle-block [role="button"],
   .notion-toggle-block { cursor: pointer; }
