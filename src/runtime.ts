@@ -1683,16 +1683,15 @@ export const RUNTIME_JS = `(() => {
         cursor: pointer;
       }
 
-      /* Emoji / page icons — survive theme swaps & missing Color Emoji fonts */
+      /* Emoji / page icons — colorful fonts; don't force fill that can blank them */
       .notion-record-icon,
       .notion-record-icon span,
       .notion-record-icon [role="img"],
       [aria-label="Page icon"] {
         font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
-          "Android Emoji", "EmojiOne Color", "Twemoji Mozilla", "Segoe UI Symbol",
-          sans-serif !important;
-        color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
-        -webkit-text-fill-color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
+          "Android Emoji", "Twemoji Mozilla", "Segoe UI Symbol", sans-serif !important;
+        color: var(--c-texPri, var(--c-regEmoCol, currentColor)) !important;
+        -webkit-text-fill-color: unset !important;
         opacity: 1 !important;
         visibility: visible !important;
         line-height: 1 !important;
@@ -1778,10 +1777,25 @@ export const RUNTIME_JS = `(() => {
         overflow-x: auto !important;
         max-width: 100%;
       }
+      /* Payment etc.: table wider than viewport — scroll, don't squeeze columns */
+      .notion-collection_view-block .notion-scroller.horizontal,
+      .notion-collection_view-block .notion-collection-view-body,
+      .notion-collection_view_page-block .notion-scroller.horizontal {
+        overflow-x: auto !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        -webkit-overflow-scrolling: touch;
+      }
+      .notion-table-view {
+        width: max-content !important;
+        min-width: 100% !important;
+        max-width: none !important;
+        background: var(--c-bacPri, inherit);
+        min-height: 40vh;
+      }
       .notion-collection-view-body,
       .notion-gallery-view,
-      .notion-calendar-view,
-      .notion-table-view {
+      .notion-calendar-view {
         background: var(--c-bacPri, inherit);
         min-height: 40vh;
       }
@@ -1890,11 +1904,16 @@ export const RUNTIME_JS = `(() => {
         max-width: 100% !important;
         box-sizing: border-box !important;
       }
+      /* Only clamp image blocks — NOT collection/table views (Payment tables) */
       .notion-image-block[style*="1440px"],
-      .notion-page-content [style*="max-width: 1440px"],
-      .notion-page-content [style*="width: 1440px"] {
+      .notion-page-content > .notion-image-block[style*="max-width: 1440px"],
+      .notion-page-content .notion-image-block[style*="width: 1440px"] {
         max-width: 100% !important;
         width: 100% !important;
+      }
+      .notion-collection_view-block,
+      .notion-collection_view_page-block {
+        max-width: 100% !important;
       }
 
       /* Mobile: stack Notion column layouts + use more of the screen */
@@ -2242,7 +2261,7 @@ export const RUNTIME_JS = `(() => {
     const wasFull = peekFull;
     const prevHref = peekCurrentHref;
 
-    // Resolve before pushState — relative fetch after history change can miss the file
+    // Resolve against the current URL BEFORE any history change
     let fetchUrl = href;
     try {
       fetchUrl = new URL(href, location.href).href;
@@ -2256,14 +2275,10 @@ export const RUNTIME_JS = `(() => {
       peekFull = false;
     }
 
-    // Push history for every open / in-peek navigation / expand-to-full
-    if (!peekRestoring) {
-      const modeChanged = requested === "full" && wasOpen && !wasFull;
-      const hrefChanged = !wasOpen || prevHref !== href;
-      if (hrefChanged || modeChanged) {
-        pushPeekHistory(href, requested === "full" ? "full" : peekMode);
-      }
-    }
+    const shouldPush =
+      !peekRestoring &&
+      ((!wasOpen || prevHref !== href) ||
+        (requested === "full" && wasOpen && !wasFull));
 
     const root = ensurePeekRoot();
     root.setAttribute("data-mode", displayPeekMode());
@@ -2304,7 +2319,10 @@ export const RUNTIME_JS = `(() => {
     }, 1800);
 
     try {
-      const res = await fetch(fetchUrl, { credentials: "same-origin" });
+      const res = await fetch(fetchUrl, {
+        credentials: "same-origin",
+        cache: "reload",
+      });
       if (gen !== peekLoadGen) return;
       if (!res.ok) throw new Error("HTTP " + res.status);
       const html = await res.text();
@@ -2342,6 +2360,10 @@ export const RUNTIME_JS = `(() => {
       }
       body.appendChild(wrap);
       normalizeFrozenWidths(body);
+      // Push history only after content is ready (avoids stuck Loading + bad relative fetch)
+      if (shouldPush) {
+        pushPeekHistory(href, requested === "full" ? "full" : peekMode);
+      }
       // Re-wire interactive bits inside peek
       wireToggles(body);
       enhanceMedia(body);
@@ -2568,10 +2590,13 @@ export function injectRuntime(
   }
   .notion-record-icon,
   .notion-record-icon span,
+  .notion-record-icon [role="img"],
   [aria-label="Page icon"] {
     font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Segoe UI Symbol", sans-serif !important;
-    color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
-    -webkit-text-fill-color: var(--c-regEmoCol, var(--c-texPri, currentColor)) !important;
+    color: var(--c-texPri, var(--c-regEmoCol, currentColor)) !important;
+    -webkit-text-fill-color: unset !important;
+    opacity: 1 !important;
+    visibility: visible !important;
   }
   .notion-bookmark-block {
     max-width: 100% !important;
@@ -2627,6 +2652,27 @@ export function injectRuntime(
   .notion-table-view, .notion-scroller.horizontal {
     overflow-x: auto !important;
     max-width: 100%;
+  }
+  .notion-collection_view-block .notion-scroller.horizontal,
+  .notion-collection_view-block .notion-collection-view-body,
+  .notion-collection_view_page-block .notion-scroller.horizontal {
+    overflow-x: auto !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    -webkit-overflow-scrolling: touch;
+  }
+  .notion-table-view {
+    width: max-content !important;
+    min-width: 100% !important;
+    max-width: none !important;
+  }
+  .notion-collection_view-block,
+  .notion-collection_view_page-block {
+    max-width: 100% !important;
+  }
+  .notion-image-block[style*="1440px"] {
+    max-width: 100% !important;
+    width: 100% !important;
   }
   .notion-collection-view-body,
   .notion-gallery-view,
