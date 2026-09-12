@@ -697,14 +697,19 @@ export const RUNTIME_JS = `(() => {
   }
 
   function defaultTabIndex(views, tabs) {
-    const prefer = (views && views.defaultLabel) || "Gallery view";
-    let idx = tabs.findIndex((t) =>
-      tabLabel(t).toLowerCase() === prefer.toLowerCase(),
-    );
-    if (idx < 0) {
-      idx = tabs.findIndex((t) => /gallery/i.test(tabLabel(t)));
+    // Prefer Gallery, then Table — never leave Calendar as the default
+    let idx = tabs.findIndex((t) => /gallery/i.test(tabLabel(t)));
+    if (idx < 0) idx = tabs.findIndex((t) => /^table\\b/i.test(tabLabel(t)));
+    if (idx < 0 && views && views.defaultLabel) {
+      const prefer = String(views.defaultLabel).toLowerCase();
+      if (!/calendar/i.test(prefer)) {
+        idx = tabs.findIndex((t) => tabLabel(t).toLowerCase() === prefer);
+      }
     }
-    if (idx < 0) idx = (views && typeof views.defaultIndex === "number") ? views.defaultIndex : 0;
+    if (idx < 0) {
+      idx =
+        views && typeof views.defaultIndex === "number" ? views.defaultIndex : 0;
+    }
     return Math.max(0, Math.min(idx, Math.max(0, tabs.length - 1)));
   }
 
@@ -719,12 +724,26 @@ export const RUNTIME_JS = `(() => {
     wireCardActions(root);
   }
 
-  function wireViewTabs(root, views) {
-    const tabs = collectionTabs(root);
-    const body =
+  function findCollectionBody(root) {
+    let body =
       root.querySelector(".notion-collection-view-body") ||
       root.querySelector(".notion-scroller.notion-collection-view-body") ||
       root.querySelector(".notion-scroller.vertical.horizontal");
+    if (body) return body;
+    // collection_view_page: body is often a sibling of the tablist host
+    const tablist = root.querySelector('[role="tablist"]');
+    let el = tablist || root;
+    while (el) {
+      const b = el.querySelector && el.querySelector(".notion-collection-view-body");
+      if (b) return b;
+      el = el.parentElement;
+    }
+    return document.querySelector(".notion-collection-view-body");
+  }
+
+  function wireViewTabs(root, views) {
+    const tabs = collectionTabs(root);
+    const body = findCollectionBody(root);
     if (!tabs.length) return;
 
     // Always make tabs look/feel clickable (even before captures exist)
@@ -1280,11 +1299,22 @@ export const RUNTIME_JS = `(() => {
     return out.length ? out : [fromImg];
   }
 
+  function setPeekUnderLightbox(on) {
+    for (const p of $$("[data-nsp-peek-root]")) {
+      if (on) p.setAttribute("data-nsp-under-lightbox", "1");
+      else p.removeAttribute("data-nsp-under-lightbox");
+    }
+  }
+
   function openLightbox(img) {
     // Only remove the overlay dialog — never [data-nsp-lightbox] on <html>
     // (wireLightbox used to set that flag on documentElement and wiped the page).
     const existing = document.querySelector("div[data-nsp-lightbox]");
-    if (existing) existing.remove();
+    if (existing) {
+      try { if (existing.hidePopover) existing.hidePopover(); } catch (_) {}
+      existing.remove();
+    }
+    setPeekUnderLightbox(false);
 
     const src0 = (img && (img.currentSrc || img.getAttribute("src") || img.src)) || "";
     if (!src0 || src0.indexOf("data:image/gif") === 0 || src0.indexOf("data:image/svg") === 0) {
@@ -1299,8 +1329,11 @@ export const RUNTIME_JS = `(() => {
     overlay.setAttribute("data-nsp-lightbox", "1");
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
+    // popover=manual → top layer above peek (z-index alone loses to peek stacking)
+    try { overlay.setAttribute("popover", "manual"); } catch (_) {}
     overlay.style.cssText =
       "position:fixed;top:0;left:0;right:0;bottom:0;z-index:2147483646;" +
+      "width:100vw;height:100vh;margin:0;border:none;max-width:none;max-height:none;" +
       "background:#111;display:flex;flex-direction:column;align-items:center;" +
       "justify-content:center;padding:16px;box-sizing:border-box;cursor:zoom-out;color:#fff;";
 
@@ -1451,6 +1484,8 @@ export const RUNTIME_JS = `(() => {
         try {
           if (document.fullscreenElement) await document.exitFullscreen();
         } catch (_) {}
+        try { if (overlay.hidePopover) overlay.hidePopover(); } catch (_) {}
+        setPeekUnderLightbox(false);
         overlay.remove();
         document.removeEventListener("keydown", onKey, true);
         document.removeEventListener("fullscreenchange", syncFsBtn);
@@ -1497,7 +1532,11 @@ export const RUNTIME_JS = `(() => {
 
     const mount = document.body || document.getElementById("notion-app");
     if (!mount) return;
+    setPeekUnderLightbox(true);
     mount.appendChild(overlay);
+    try {
+      if (overlay.showPopover) overlay.showPopover();
+    } catch (_) {}
     show(index);
     syncFsBtn();
   }
@@ -1791,6 +1830,12 @@ export const RUNTIME_JS = `(() => {
         z-index: 30000;
         pointer-events: none;
         visibility: hidden;
+      }
+      [data-nsp-peek-root][data-nsp-under-lightbox] {
+        z-index: 1 !important;
+      }
+      [data-nsp-lightbox] {
+        z-index: 2147483646 !important;
       }
       [data-nsp-peek-root][data-open="1"] {
         visibility: visible;

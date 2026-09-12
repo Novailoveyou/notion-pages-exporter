@@ -69,9 +69,15 @@ export async function captureCollectionViews(
       }
       if (tabs.length < 1) continue;
 
+      // Prefer Gallery, then Table — never leave Calendar as the default
       let defaultIndex = tabs.findIndex((t) =>
         /gallery/i.test(t.textContent || ""),
       );
+      if (defaultIndex < 0) {
+        defaultIndex = tabs.findIndex((t) =>
+          /^table\b/i.test((t.textContent || "").replace(/\s+/g, " ").trim()),
+        );
+      }
       if (defaultIndex < 0) {
         defaultIndex = tabs.findIndex(
           (t) =>
@@ -103,68 +109,70 @@ export async function captureCollectionViews(
   const out: CollectionViewCapture[] = [];
 
   for (const plan of plans) {
+    // Single-tab collections have nothing to switch offline
+    if (plan.tabLabels.length < 2) continue;
+
     const captured: { label: string; html: string }[] = [];
+
+    const clickTab = async (index: number) => {
+      await page.evaluate(
+        (blockId, tabIndex) => {
+          const roots = Array.from(
+            document.querySelectorAll(`[data-block-id="${blockId}"]`),
+          ) as HTMLElement[];
+          const root =
+            roots.find((r) => r.querySelector('[role="tablist"]')) || roots[0];
+          const tablist = root?.querySelector('[role="tablist"]');
+          if (!tablist) return;
+          const buttons = Array.from(
+            tablist.querySelectorAll(".notion-collection-view-tab-button"),
+          ) as HTMLElement[];
+          const tabs = buttons.length
+            ? buttons
+            : (Array.from(
+                tablist.querySelectorAll('[role="tab"]'),
+              ) as HTMLElement[]);
+          const tab = tabs[tabIndex];
+          if (!tab) return;
+          try {
+            tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+          } catch {
+            /* ignore */
+          }
+          // Prefer the inner [role=tab] — outer button often opens a popup
+          const target =
+            (tab.querySelector('[role="tab"]') as HTMLElement) || tab;
+          for (const type of [
+            "pointerdown",
+            "mousedown",
+            "mouseup",
+            "click",
+          ] as const) {
+            target.dispatchEvent(
+              new MouseEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+              }),
+            );
+          }
+        },
+        plan.blockId,
+        index,
+      );
+    };
 
     for (let i = 0; i < plan.tabLabels.length; i++) {
       const label = plan.tabLabels[i] || "View";
-
-      const handles = await page.$$(
-        `[data-block-id="${plan.blockId}"] [role="tablist"] .notion-collection-view-tab-button`,
-      );
-      let handle = handles[i] || null;
-      if (!handle) {
-        const alt = await page.$$(
-          `[data-block-id="${plan.blockId}"] [role="tablist"] [role="tab"]`,
-        );
-        handle = alt[i] || null;
-      }
-      if (handle) {
-        try {
-          await handle.evaluate((el) => {
-            try {
-              (el as HTMLElement).scrollIntoView({
-                block: "nearest",
-                inline: "nearest",
-              });
-            } catch {
-              /* ignore */
-            }
-          });
-          await handle.click({ delay: 30 });
-        } catch {
-          await page.evaluate(
-            (blockId, index) => {
-              const tablist = document.querySelector(
-                `[data-block-id="${blockId}"] [role="tablist"]`,
-              );
-              if (!tablist) return;
-              const tabs = Array.from(
-                tablist.querySelectorAll(".notion-collection-view-tab-button"),
-              ) as HTMLElement[];
-              const tab =
-                tabs[index] ||
-                (
-                  Array.from(
-                    tablist.querySelectorAll('[role="tab"]'),
-                  ) as HTMLElement[]
-                )[index];
-              tab?.click();
-            },
-            plan.blockId,
-            i,
-          );
-        }
-      }
-      for (const h of handles) await h.dispose().catch(() => {});
-
+      await clickTab(i);
       await page.keyboard.press("Escape").catch(() => {});
-      const waitMs = /calendar|table|board|timeline/i.test(label) ? 2400 : 1200;
+      const waitMs = /calendar|table|board|timeline/i.test(label) ? 2800 : 1400;
       await new Promise((r) => setTimeout(r, waitMs));
 
       const expectSel = /calendar/i.test(label)
         ? ".notion-calendar-view"
         : /table/i.test(label)
-          ? ".notion-table-view"
+          ? ".notion-table-view, .notion-collection-table"
           : /board/i.test(label)
             ? ".notion-board-view"
             : /list/i.test(label)
@@ -173,68 +181,120 @@ export async function captureCollectionViews(
                 ? ".notion-gallery-view"
                 : null;
       if (expectSel) {
-        for (let attempt = 0; attempt < 6; attempt++) {
+        for (let attempt = 0; attempt < 8; attempt++) {
           const ready = await page.evaluate(
             (blockId, sel) => {
-              const roots = Array.from(
-                document.querySelectorAll(`[data-block-id="${blockId}"]`),
-              );
-              return roots.some((root) => !!root.querySelector(sel));
+              const body = (() => {
+                const roots = Array.from(
+                  document.querySelectorAll(`[data-block-id="${blockId}"]`),
+                ) as HTMLElement[];
+                const tabHost = roots.find((r) =>
+                  r.querySelector('[role="tablist"]'),
+                );
+                const tablist = tabHost?.querySelector(
+                  '[role="tablist"]',
+                ) as HTMLElement | null;
+                let el: HTMLElement | null = tablist;
+                while (el) {
+                  const b = el.querySelector(
+                    ".notion-collection-view-body",
+                  ) as HTMLElement | null;
+                  if (b) return b;
+                  el = el.parentElement;
+                }
+                for (const root of roots) {
+                  const b = root.querySelector(
+                    ".notion-collection-view-body",
+                  ) as HTMLElement | null;
+                  if (b) return b;
+                }
+                return document.querySelector(
+                  ".notion-collection-view-body",
+                ) as HTMLElement | null;
+              })();
+              return !!(body && body.querySelector(sel));
             },
             plan.blockId,
             expectSel,
           );
           if (ready) break;
-          const retry = await page.$$(
-            `[data-block-id="${plan.blockId}"] [role="tablist"] .notion-collection-view-tab-button`,
-          );
-          if (retry[i]) {
-            await retry[i]!.click({ delay: 20 }).catch(() => {});
-          }
-          for (const h of retry) await h.dispose().catch(() => {});
+          await clickTab(i);
           await page.keyboard.press("Escape").catch(() => {});
-          await new Promise((r) => setTimeout(r, 450));
+          await new Promise((r) => setTimeout(r, 500));
         }
       }
 
       const html = await page.evaluate((blockId) => {
+        // On collection_view_page, the view body is often a sibling of the
+        // tablist host (same page block id is NOT an ancestor of the body).
+        // Walk up from the tablist until we find .notion-collection-view-body.
         const roots = Array.from(
           document.querySelectorAll(`[data-block-id="${blockId}"]`),
         ) as HTMLElement[];
-        const root =
-          roots.find((r) =>
-            r.querySelector(
-              ".notion-collection-view-body, .notion-calendar-view, .notion-table-view, .notion-gallery-view",
-            ),
-          ) || roots[0];
-        if (!root) return "";
-        const body =
-          root.querySelector(".notion-collection-view-body") ||
-          root.querySelector(".notion-scroller.horizontal") ||
-          root.querySelector(
+        const tabHost = roots.find((r) => r.querySelector('[role="tablist"]'));
+        const tablist = tabHost?.querySelector(
+          '[role="tablist"]',
+        ) as HTMLElement | null;
+
+        let body: HTMLElement | null = null;
+        let el: HTMLElement | null = tablist;
+        while (el) {
+          const candidate = el.querySelector(
+            ".notion-collection-view-body",
+          ) as HTMLElement | null;
+          if (candidate) {
+            body = candidate;
+            break;
+          }
+          el = el.parentElement;
+        }
+        if (!body) {
+          for (const root of roots) {
+            const candidate = root.querySelector(
+              ".notion-collection-view-body",
+            ) as HTMLElement | null;
+            if (candidate) {
+              body = candidate;
+              break;
+            }
+          }
+        }
+        if (!body) {
+          body =
+            (document.querySelector(
+              ".notion-collection-view-body",
+            ) as HTMLElement | null) ||
+            (document.querySelector(
+              ".notion-scroller.horizontal",
+            ) as HTMLElement | null);
+        }
+        if (!body) {
+          const view = document.querySelector(
             ".notion-calendar-view, .notion-table-view, .notion-gallery-view, .notion-board-view, .notion-list-view",
-          )?.parentElement;
+          );
+          body = (view?.parentElement as HTMLElement | null) || null;
+        }
         if (!body) return "";
 
         for (const img of Array.from(body.querySelectorAll("img"))) {
-          const el = img as HTMLImageElement;
+          const elImg = img as HTMLImageElement;
           const ds =
-            el.getAttribute("data-src") ||
-            el.getAttribute("data-lazy-src") ||
-            el.getAttribute("data-original");
-          const src = el.getAttribute("src") || "";
+            elImg.getAttribute("data-src") ||
+            elImg.getAttribute("data-lazy-src") ||
+            elImg.getAttribute("data-original");
+          const src = elImg.getAttribute("src") || "";
           if (
             ds &&
             (!src ||
               src.startsWith("data:image/svg") ||
               src.startsWith("data:image/gif"))
           ) {
-            el.setAttribute("src", ds);
+            elImg.setAttribute("src", ds);
           }
-          const cur = el.getAttribute("src");
+          const cur = elImg.getAttribute("src");
           if (cur && !cur.startsWith("data:") && !cur.startsWith("blob:")) {
             try {
-              el.setAttribute("src", new URL(cur, location.href).href);
+              elImg.setAttribute("src", new URL(cur, location.href).href);
             } catch {
               /* ignore */
             }
@@ -248,15 +308,8 @@ export async function captureCollectionViews(
       }
     }
 
-    const defHandles = await page.$$(
-      `[data-block-id="${plan.blockId}"] [role="tablist"] .notion-collection-view-tab-button`,
-    );
-    const def = defHandles[plan.defaultIndex];
-    if (def) {
-      await def.click({ delay: 20 }).catch(() => {});
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    for (const h of defHandles) await h.dispose().catch(() => {});
+    await clickTab(plan.defaultIndex);
+    await new Promise((r) => setTimeout(r, 600));
 
     if (captured.length) {
       out.push({

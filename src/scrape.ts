@@ -105,6 +105,26 @@ export type SyncResult = {
 
 export { restoreBackup, backupDir, stagingDir };
 
+/** True when HTML has 2+ view tabs but no usable offline view captures. */
+function pageNeedsCollectionViewRecapture(htmlPath: string): boolean {
+  try {
+    if (!existsSync(htmlPath)) return true;
+    const html = readFileSync(htmlPath, "utf8");
+    const tabButtons = (html.match(/notion-collection-view-tab-button/g) || [])
+      .length;
+    if (tabButtons < 2) return false;
+    const m = html.match(
+      /id="nsp-collection-views"[^>]*>([\s\S]*?)<\/script>/i,
+    );
+    if (!m) return true;
+    const data = JSON.parse(m[1] || "[]") as { tabs?: unknown[] }[];
+    if (!Array.isArray(data) || data.length === 0) return true;
+    return !data.some((v) => Array.isArray(v.tabs) && v.tabs.length >= 2);
+  } catch {
+    return true;
+  }
+}
+
 export async function syncNotionSite(opts: SyncOptions): Promise<SyncResult> {
   const startedAt = Date.now();
   const root = normalizePageUrl(opts.url);
@@ -528,20 +548,26 @@ async function scrapeOnePage(
     cached.fingerprint === fingerprint &&
     ensureCachedPageInStaging(liveOut, outRoot, cached.file)
   ) {
-    collector.detach();
-    rememberPagePath(pageUrlMap, url, cached.file);
-    setPhase("links", `${label} · cache hit`);
-    for (const link of cached.links || []) {
-      enqueueIfNew(state, link, url);
+    // Re-scrape when multi-view tabs exist but captures are missing
+    // (Table/Gallery switching is dead without them).
+    const stagedHtml = join(outRoot, cached.file);
+    if (!pageNeedsCollectionViewRecapture(stagedHtml)) {
+      collector.detach();
+      rememberPagePath(pageUrlMap, url, cached.file);
+      setPhase("links", `${label} · cache hit`);
+      for (const link of cached.links || []) {
+        enqueueIfNew(state, link, url);
+      }
+      onProgress?.();
+      nextCache.pages[key] = {
+        url,
+        file: cached.file,
+        fingerprint,
+        links: cached.links || [],
+      };
+      return "skipped";
     }
-    onProgress?.();
-    nextCache.pages[key] = {
-      url,
-      file: cached.file,
-      fingerprint,
-      links: cached.links || [],
-    };
-    return "skipped";
+    note(`${label} · re-capture views`);
   }
 
   // Full settle only when we must re-scrape
@@ -555,7 +581,15 @@ async function scrapeOnePage(
 
   setPhase("views", label);
   updateSpinner(label, "views");
-  const collectionViews = await captureCollectionViews(page).catch(() => []);
+  const collectionViews = await captureCollectionViews(page).catch((err) => {
+    warn(`View capture failed · ${label}: ${err instanceof Error ? err.message : String(err)}`);
+    return [] as Awaited<ReturnType<typeof captureCollectionViews>>;
+  });
+  if (collectionViews.length) {
+    note(
+      `${label} · ${collectionViews.reduce((n, v) => n + v.tabs.length, 0)} view snapshot(s)`,
+    );
+  }
 
   // Nested toggles can appear after the first pass / view switches
   setPhase("toggles", `${label} · nested`);
