@@ -97,6 +97,32 @@ export function saveAsset(
   return rel;
 }
 
+/** Audio/PDF/video — never ship bytes through page.evaluate (CDP JSON hangs for minutes). */
+function looksHeavyMediaUrl(url: string): boolean {
+  return (
+    /\.(mp3|m4a|wav|ogg|aac|flac|mp4|webm|mov|m4v|pdf)(\?|$)/i.test(url) ||
+    /file\.notion\.so/i.test(url) ||
+    /\/file\//i.test(url)
+  );
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function downloadUrl(
   store: AssetStore,
   url: string,
@@ -108,6 +134,22 @@ export async function downloadUrl(
   if (clean.startsWith("data:") || clean.startsWith("blob:")) return null;
   if (isNotionPageAssetUrl(clean)) return null;
   if (/\.js(\?|$)/i.test(clean) && !/\/image\//i.test(clean)) return null;
+
+  // Prefer Node fetch for heavy media — in-page Array/base64 transfer can stall for 30–60+ min
+  if (looksHeavyMediaUrl(clean)) {
+    const fromNode = await fetchWithCookies(page, clean);
+    if (fromNode) {
+      const saved = saveAsset(store, clean, fromNode.body, fromNode.ct);
+      if (saved) return saved;
+    }
+    // Last resort: in-page only if Notion blocks Node (small files / auth)
+    const fromPage = await fetchInPage(page, clean, { maxBytes: 2_000_000 });
+    if (fromPage) {
+      const saved = saveAsset(store, clean, fromPage.body, fromPage.ct);
+      if (saved) return saved;
+    }
+    return null;
+  }
 
   const fromPage = await fetchInPage(page, clean);
   if (fromPage) {
@@ -125,17 +167,49 @@ export async function downloadUrl(
 async function fetchInPage(
   page: Page,
   url: string,
+  opts?: { maxBytes?: number },
 ): Promise<{ body: Buffer; ct: string | null } | null> {
+  const maxBytes = opts?.maxBytes ?? 4_000_000;
   try {
-    const res = await page.evaluate(async (u) => {
-      const r = await fetch(u, { credentials: "include" });
-      if (!r.ok) return null;
-      const ct = r.headers.get("content-type");
-      const buf = await r.arrayBuffer();
-      return { ct, bytes: Array.from(new Uint8Array(buf)) };
-    }, url);
-    if (!res) return null;
-    return { body: Buffer.from(res.bytes), ct: res.ct };
+    const res = await withTimeout(
+      page.evaluate(
+        async (u, max) => {
+          const ac = new AbortController();
+          const kill = setTimeout(() => ac.abort(), 25_000);
+          try {
+            const r = await fetch(u, {
+              credentials: "include",
+              signal: ac.signal,
+            });
+            if (!r.ok) return null;
+            const ct = r.headers.get("content-type");
+            const len = Number(r.headers.get("content-length") || 0);
+            if (len > max) return { tooLarge: true as const, ct, len };
+            const buf = new Uint8Array(await r.arrayBuffer());
+            if (buf.byteLength > max) {
+              return { tooLarge: true as const, ct, len: buf.byteLength };
+            }
+            // base64 — far cheaper over CDP than Array.from(number[])
+            let binary = "";
+            const chunk = 0x8000;
+            for (let i = 0; i < buf.length; i += chunk) {
+              binary += String.fromCharCode(
+                ...buf.subarray(i, Math.min(i + chunk, buf.length)),
+              );
+            }
+            return { ct, b64: btoa(binary) };
+          } finally {
+            clearTimeout(kill);
+          }
+        },
+        url,
+        maxBytes,
+      ),
+      30_000,
+    );
+    if (!res || "tooLarge" in res) return null;
+    if (!("b64" in res) || !res.b64) return null;
+    return { body: Buffer.from(res.b64, "base64"), ct: res.ct };
   } catch {
     return null;
   }
@@ -149,20 +223,28 @@ async function fetchWithCookies(
     const cookies = await page.cookies(url);
     const cookie = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     const referer = page.url();
-    const res = await fetch(url, {
-      headers: {
-        Cookie: cookie,
-        Referer: referer,
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-      },
-      redirect: "follow",
-    });
-    if (!res.ok) return null;
-    const ct = res.headers.get("content-type");
-    const body = Buffer.from(await res.arrayBuffer());
-    return { body, ct };
+    const ac = new AbortController();
+    const kill = setTimeout(() => ac.abort(), 45_000);
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Cookie: cookie,
+          Referer: referer,
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          Accept:
+            "audio/*,video/*,image/avif,image/webp,image/apng,image/*,application/pdf,*/*;q=0.8",
+        },
+        redirect: "follow",
+        signal: ac.signal,
+      });
+      if (!res.ok) return null;
+      const ct = res.headers.get("content-type");
+      const body = Buffer.from(await res.arrayBuffer());
+      return { body, ct };
+    } finally {
+      clearTimeout(kill);
+    }
   } catch {
     return null;
   }
@@ -236,7 +318,8 @@ export async function saveCollectedResponses(
   for (const [key, res] of responses) {
     if (store.map.has(key)) continue;
     try {
-      const body = await res.buffer();
+      const body = await withTimeout(res.buffer(), 20_000);
+      if (!body) continue;
       const ct = res.headers()["content-type"] ?? null;
       saveAsset(store, res.url(), body, ct);
     } catch {
@@ -250,6 +333,7 @@ export async function downloadAssetUrls(
   page: Page,
   urls: Iterable<string>,
   concurrency = 6,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   const pending: string[] = [];
   const seen = new Set<string>();
@@ -267,14 +351,20 @@ export async function downloadAssetUrls(
 
   const limit = Math.max(1, concurrency);
   let i = 0;
+  let done = 0;
+  const total = pending.length;
+  onProgress?.(0, total);
   const workers = Array.from({ length: Math.min(limit, pending.length) }, async () => {
     while (i < pending.length) {
       const idx = i++;
       const url = pending[idx]!;
       await downloadUrl(store, url, page);
+      done += 1;
+      if (done === total || done % 5 === 0) onProgress?.(done, total);
     }
   });
   await Promise.all(workers);
+  onProgress?.(total, total);
 }
 
 export async function collectDomAssetUrls(page: Page): Promise<string[]> {

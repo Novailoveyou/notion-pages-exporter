@@ -603,11 +603,15 @@ async function scrapeOnePage(
   const domAssets = await collectDomAssetUrls(page);
   await withStoreLock(async () => {
     await saveCollectedResponses(store, collector.responses);
-    await downloadAssetUrls(store, page, [
-      ...collector.urls,
-      ...domAssets,
-      ...hydratedMedia,
-    ]);
+    await downloadAssetUrls(
+      store,
+      page,
+      [...collector.urls, ...domAssets, ...hydratedMedia],
+      6,
+      (done, total) => {
+        if (total > 0) note(`${label} · media ${done}/${total}`);
+      },
+    );
   });
   collector.detach();
 

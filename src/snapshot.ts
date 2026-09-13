@@ -495,10 +495,13 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       } catch {
         /* ignore */
       }
-      await delay(200);
+      await delay(60);
 
       // Click to force Notion player / image mount (never follow bookmark links)
-      if (!block.classList.contains("notion-bookmark-block")) {
+      const alreadyMounted = Boolean(
+        block.querySelector("img[src]:not([src^='data:']), audio[src], video[src]"),
+      );
+      if (!block.classList.contains("notion-bookmark-block") && !alreadyMounted) {
         const hit =
           block.querySelector("[role='button']") ||
           block.querySelector("[role='figure']") ||
@@ -508,9 +511,9 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
         } catch {
           /* ignore */
         }
-        await delay(350);
+        await delay(120);
       } else {
-        await delay(400);
+        await delay(40);
       }
 
       // Pull URLs from React fiber
