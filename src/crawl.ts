@@ -40,23 +40,82 @@ export function enqueueIfNew(
 }
 
 /**
+ * Scroll window + Notion scrollers so virtualized gallery/list/board rows
+ * mount. Call a harvest callback at each step — Notion unmounts off-screen
+ * cards, so links/ids must be collected while scrolling, not only at the end.
+ */
+export async function revealLazyContent(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    const scrollElement = async (el: HTMLElement) => {
+      const maxX = Math.max(0, el.scrollWidth - el.clientWidth);
+      const maxY = Math.max(0, el.scrollHeight - el.clientHeight);
+      const stepX = Math.max(160, Math.floor(el.clientWidth * 0.75) || 160);
+      const stepY = Math.max(160, Math.floor(el.clientHeight * 0.75) || 160);
+      if (maxX > 0) {
+        for (let x = 0; x <= maxX + stepX; x += stepX) {
+          el.scrollLeft = Math.min(x, maxX);
+          await delay(70);
+        }
+        el.scrollLeft = 0;
+        await delay(40);
+      }
+      if (maxY > 0) {
+        for (let y = 0; y <= maxY + stepY; y += stepY) {
+          el.scrollTop = Math.min(y, maxY);
+          await delay(70);
+        }
+        el.scrollTop = 0;
+        await delay(40);
+      }
+    };
+
+    for (const el of Array.from(
+      document.querySelectorAll(".notion-scroller"),
+    ) as HTMLElement[]) {
+      await scrollElement(el);
+    }
+
+    const height = () =>
+      Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+      );
+    let prev = 0;
+    for (let i = 0; i < 28; i++) {
+      const h = height();
+      if (h <= prev) break;
+      prev = h;
+      window.scrollTo(0, h);
+      await delay(100);
+    }
+    window.scrollTo(0, 0);
+    await delay(120);
+  });
+}
+
+/**
  * Collect every same-site Notion page link from the rendered DOM.
- * Aggressive: anchors, role=link, and collection views.
+ * Scrolls collection scrollers while harvesting — virtualized gallery cards
+ * only exist in the DOM while visible.
  */
 export async function collectSameSiteLinks(
   page: Page,
   currentUrl: string,
 ): Promise<string[]> {
   const origin = new URL(currentUrl).origin;
-  const hrefs = await page.evaluate((siteOrigin) => {
+  const hrefs = await page.evaluate(async (siteOrigin) => {
     const out = new Set<string>();
     const pageIdInPath = /(?:-|\/)([0-9a-f]{32})(?:\?|#|$)/i;
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
     const add = (href: string | null | undefined) => {
       if (!href) return;
       const trimmed = href.trim();
       if (
         !trimmed ||
+        trimmed === "#" ||
         trimmed.startsWith("javascript:") ||
         trimmed.startsWith("mailto:") ||
         trimmed.startsWith("tel:") ||
@@ -86,25 +145,91 @@ export async function collectSameSiteLinks(
       }
     };
 
-    for (const a of Array.from(document.querySelectorAll("a[href]"))) {
-      add(a.getAttribute("href"));
+    /** Collection cards sometimes use href="#" — recover from data-block-id. */
+    const addBlockId = (raw: string | null | undefined) => {
+      if (!raw) return;
+      const hex = raw.replace(/-/g, "").toLowerCase();
+      if (!/^[0-9a-f]{32}$/.test(hex)) return;
+      out.add(`${siteOrigin}/${hex}`);
+    };
+
+    const harvest = () => {
+      for (const a of Array.from(document.querySelectorAll("a[href]"))) {
+        add(a.getAttribute("href"));
+      }
+
+      for (const el of Array.from(
+        document.querySelectorAll(
+          "[data-href], [role='link'], .notion-link-token",
+        ),
+      )) {
+        add(el.getAttribute("data-href") || el.getAttribute("href"));
+      }
+
+      for (const el of Array.from(
+        document.querySelectorAll(
+          ".notion-collection-item a[href], .notion-page-block a[href], .notion-table-view a[href], .notion-list-view a[href], .notion-gallery-view a[href], .notion-board-view a[href]",
+        ),
+      )) {
+        add(el.getAttribute("href"));
+      }
+
+      for (const el of Array.from(
+        document.querySelectorAll(
+          ".notion-collection-item[data-block-id], .notion-gallery-view .notion-page-block[data-block-id], .notion-list-view .notion-page-block[data-block-id], .notion-board-view .notion-page-block[data-block-id], .notion-table-view-row[data-block-id], .notion-collection-item .notion-page-block[data-block-id]",
+        ),
+      )) {
+        addBlockId(el.getAttribute("data-block-id"));
+        const a = el.querySelector("a[href]");
+        if (a) add(a.getAttribute("href"));
+      }
+    };
+
+    harvest();
+
+    for (const scroller of Array.from(
+      document.querySelectorAll(".notion-scroller"),
+    ) as HTMLElement[]) {
+      const maxX = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      const maxY = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const stepX = Math.max(140, Math.floor(scroller.clientWidth * 0.7) || 140);
+      const stepY = Math.max(140, Math.floor(scroller.clientHeight * 0.7) || 140);
+      if (maxX > 0) {
+        for (let x = 0; x <= maxX + stepX; x += stepX) {
+          scroller.scrollLeft = Math.min(x, maxX);
+          await delay(55);
+          harvest();
+        }
+        scroller.scrollLeft = 0;
+      }
+      if (maxY > 0) {
+        for (let y = 0; y <= maxY + stepY; y += stepY) {
+          scroller.scrollTop = Math.min(y, maxY);
+          await delay(55);
+          harvest();
+        }
+        scroller.scrollTop = 0;
+      }
+      harvest();
     }
 
-    for (const el of Array.from(
-      document.querySelectorAll(
-        "[data-href], [role='link'], .notion-link-token",
-      ),
-    )) {
-      add(el.getAttribute("data-href") || el.getAttribute("href"));
+    const height = () =>
+      Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+      );
+    let prev = 0;
+    for (let i = 0; i < 24; i++) {
+      const h = height();
+      if (h <= prev) break;
+      prev = h;
+      window.scrollTo(0, h);
+      await delay(80);
+      harvest();
     }
-
-    for (const el of Array.from(
-      document.querySelectorAll(
-        ".notion-collection-item a[href], .notion-page-block a[href], .notion-table-view a[href], .notion-list-view a[href], .notion-gallery-view a[href], .notion-board-view a[href]",
-      ),
-    )) {
-      add(el.getAttribute("href"));
-    }
+    window.scrollTo(0, 0);
+    await delay(80);
+    harvest();
 
     return [...out];
   }, origin);
@@ -123,13 +248,35 @@ export async function waitForNotionContent(
 ): Promise<void> {
   const deep = opts.deep !== false;
   await waitForLiveNotionUi(page);
+  // Collection galleries often hydrate after the page shell — wait briefly so
+  // fingerprints / link discovery aren't computed against an empty view.
+  await page
+    .waitForFunction(
+      () => {
+        const hosts = document.querySelectorAll(
+          ".notion-collection_view-block, .notion-collection_view_page-block, .notion-gallery-view, .notion-table-view, .notion-list-view, .notion-board-view",
+        );
+        if (!hosts.length) return true;
+        return (
+          document.querySelectorAll(
+            ".notion-collection-item, .notion-gallery-view .notion-page-block, .notion-list-view .notion-page-block, .notion-board-view .notion-page-block, .notion-table-view-row",
+          ).length > 0
+        );
+      },
+      { timeout: 20_000 },
+    )
+    .catch(() => {
+      /* page may have empty DBs — continue */
+    });
   if (!deep) {
-    // Enough for fingerprint / cache check — skip scroll + second settle
+    // Reveal collections so fingerprint + link discovery see new gallery cards
     await settleNetwork(page, 400, 4_000);
+    await revealLazyContent(page);
+    await settleNetwork(page, 300, 3_000);
     return;
   }
   await settleNetwork(page, 350, 6_000);
-  await scrollPage(page);
+  await revealLazyContent(page);
   await settleNetwork(page, 350, 6_000);
 }
 
@@ -143,26 +290,4 @@ async function settleNetwork(
   } catch {
     await new Promise((r) => setTimeout(r, Math.min(600, idleTime + 100)));
   }
-}
-
-async function scrollPage(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const height = () =>
-      Math.max(
-        document.body.scrollHeight,
-        document.documentElement.scrollHeight,
-      );
-    let prev = 0;
-    // Fewer, faster scrolls — enough to trigger lazy media
-    for (let i = 0; i < 20; i++) {
-      const h = height();
-      if (h <= prev) break;
-      prev = h;
-      window.scrollTo(0, h);
-      await delay(120);
-    }
-    window.scrollTo(0, 0);
-    await delay(150);
-  });
 }

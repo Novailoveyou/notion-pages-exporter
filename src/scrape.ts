@@ -422,6 +422,15 @@ function remainingCount(state: CrawlState): number {
   return unvisited;
 }
 
+/** Brief settle after hydrateNotionMedia promotes lazy srcs into real requests. */
+async function settleAfterMedia(page: Page): Promise<void> {
+  try {
+    await page.waitForNetworkIdle({ idleTime: 400, timeout: 5_000 });
+  } catch {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
 function takeNext(state: CrawlState): string | null {
   while (state.queue.length) {
     const url = state.queue.shift()!;
@@ -552,22 +561,40 @@ async function scrapeOnePage(
     // (Table/Gallery switching is dead without them).
     const stagedHtml = join(outRoot, cached.file);
     if (!pageNeedsCollectionViewRecapture(stagedHtml)) {
-      collector.detach();
-      rememberPagePath(pageUrlMap, url, cached.file);
-      setPhase("links", `${label} · cache hit`);
-      for (const link of cached.links || []) {
-        enqueueIfNew(state, link, url);
+      // Always re-harvest live links — fingerprint can miss virtualized cards
+      // that still expose hrefs while scrolled into view.
+      setPhase("links", `${label} · verify`);
+      const liveLinks = await collectSameSiteLinks(page, url);
+      const cachedKeys = new Set(
+        (cached.links || [])
+          .map((l) => pageKey(l))
+          .filter((k): k is string => Boolean(k)),
+      );
+      const newLinks = liveLinks.filter((l) => {
+        const k = pageKey(l);
+        return Boolean(k && !cachedKeys.has(k));
+      });
+      if (newLinks.length === 0) {
+        collector.detach();
+        rememberPagePath(pageUrlMap, url, cached.file);
+        setPhase("links", `${label} · cache hit`);
+        const merged = [...new Set([...(cached.links || []), ...liveLinks])];
+        for (const link of merged) {
+          enqueueIfNew(state, link, url);
+        }
+        onProgress?.();
+        nextCache.pages[key] = {
+          url,
+          file: cached.file,
+          fingerprint,
+          links: merged,
+        };
+        return "skipped";
       }
-      onProgress?.();
-      nextCache.pages[key] = {
-        url,
-        file: cached.file,
-        fingerprint,
-        links: cached.links || [],
-      };
-      return "skipped";
+      note(`${label} · +${newLinks.length} new link(s) · re-scrape`);
+    } else {
+      note(`${label} · re-capture views`);
     }
-    note(`${label} · re-capture views`);
   }
 
   // Full settle only when we must re-scrape
@@ -599,6 +626,8 @@ async function scrapeOnePage(
   setPhase("assets", `${label} · media`);
   updateSpinner(label, "assets");
   const hydratedMedia = await hydrateNotionMedia(page).catch(() => [] as string[]);
+  // Let promoted lazy srcs actually start transferring
+  await settleAfterMedia(page);
 
   const domAssets = await collectDomAssetUrls(page);
   await withStoreLock(async () => {

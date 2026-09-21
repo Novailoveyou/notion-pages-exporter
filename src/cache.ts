@@ -92,28 +92,90 @@ export function snapshotAssets(store: AssetStore): Record<string, string> {
 /**
  * Light content fingerprint after Notion has rendered.
  * Avoids re-freezing / re-downloading when the page body is unchanged.
+ *
+ * Accumulates block ids / collection item ids while scrolling scrollers —
+ * Notion virtualizes gallery cards, so a single snapshot misses new items.
  */
 export async function pageFingerprint(page: Page): Promise<string> {
-  const raw = await page.evaluate(() => {
+  const raw = await page.evaluate(async () => {
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const allIds = new Set<string>();
+    const collectionIds = new Set<string>();
+
+    const harvest = () => {
+      for (const el of Array.from(document.querySelectorAll("[data-block-id]"))) {
+        const id = el.getAttribute("data-block-id") || "";
+        if (id) allIds.add(id);
+      }
+      for (const el of Array.from(
+        document.querySelectorAll(
+          ".notion-collection-item[data-block-id], .notion-gallery-view .notion-page-block[data-block-id], .notion-list-view .notion-page-block[data-block-id], .notion-board-view .notion-page-block[data-block-id], .notion-table-view-row[data-block-id]",
+        ),
+      )) {
+        const id = el.getAttribute("data-block-id") || "";
+        if (id) collectionIds.add(id);
+      }
+    };
+
+    harvest();
+
+    for (const scroller of Array.from(
+      document.querySelectorAll(".notion-scroller"),
+    ) as HTMLElement[]) {
+      const maxX = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      const maxY = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const stepX = Math.max(160, Math.floor(scroller.clientWidth * 0.75) || 160);
+      const stepY = Math.max(160, Math.floor(scroller.clientHeight * 0.75) || 160);
+      if (maxX > 0) {
+        for (let x = 0; x <= maxX + stepX; x += stepX) {
+          scroller.scrollLeft = Math.min(x, maxX);
+          await delay(45);
+          harvest();
+        }
+        scroller.scrollLeft = 0;
+      }
+      if (maxY > 0) {
+        for (let y = 0; y <= maxY + stepY; y += stepY) {
+          scroller.scrollTop = Math.min(y, maxY);
+          await delay(45);
+          harvest();
+        }
+        scroller.scrollTop = 0;
+      }
+    }
+
+    const height = () =>
+      Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+      );
+    let prev = 0;
+    for (let i = 0; i < 20; i++) {
+      const h = height();
+      if (h <= prev) break;
+      prev = h;
+      window.scrollTo(0, h);
+      await delay(60);
+      harvest();
+    }
+    window.scrollTo(0, 0);
+    harvest();
+
     const root =
       document.querySelector("main#main") ||
       document.querySelector(".notion-page-content") ||
       document.querySelector("#notion-app") ||
       document.body;
-    if (!root) return "";
-    const ids = Array.from(root.querySelectorAll("[data-block-id]"))
-      .map((el) => el.getAttribute("data-block-id") || "")
-      .filter(Boolean)
-      .join(",");
-    let text = (root as HTMLElement).innerText || "";
-    // Strip common volatile Notion chrome
+    let text = root ? (root as HTMLElement).innerText || "" : "";
     text = text
       .replace(/\bEdited\s+.+$/gim, "")
       .replace(/\bLast edited\s+.+$/gim, "")
       .replace(/\s+/g, " ")
       .trim();
     const title = document.title || "";
-    return `${title}\n${ids}\n${text}`;
+    const ids = [...allIds].sort().join(",");
+    const cards = [...collectionIds].sort().join(",");
+    return `${title}\n${ids}\n${cards}\n${text}`;
   });
   return createHash("sha256").update(raw).digest("hex");
 }

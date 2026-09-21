@@ -397,6 +397,9 @@ export async function expandAllToggles(page: Page): Promise<number> {
  * Force Notion to mount lazy image/audio into the DOM, and extract source URLs
  * from React fiber props when the custom player stays empty.
  * Returns discovered remote media URLs (for download).
+ *
+ * Scrolls collection scrollers while harvesting — virtualized cards unmount
+ * off-screen, and many lesson pages only load images after scroll-into-view.
  */
 export async function hydrateNotionMedia(page: Page): Promise<string[]> {
   return page.evaluate(async () => {
@@ -417,22 +420,42 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       if (a && /^https?:/i.test(a)) found.add(a);
     };
 
+    const MEDIA_KEYS = [
+      "src",
+      "url",
+      "source",
+      "file",
+      "signedUrl",
+      "signed_url",
+      "displaySource",
+      "display_source",
+      "originalSource",
+      "original_source",
+      "attachmentUrl",
+      "attachment_url",
+      "cachedUrl",
+      "cached_url",
+      "publicUrl",
+      "public_url",
+      "downloadUrl",
+      "download_url",
+      "page_cover",
+      "page_icon",
+      "icon",
+      "cover",
+      "photo",
+      "image",
+      "alias_pointer",
+    ];
+
     const walkFiber = (node: unknown, depth = 0): void => {
-      if (!node || depth > 12) return;
+      if (!node || depth > 14) return;
       const n = node as Record<string, unknown>;
       const props = (n.memoizedProps || n.pendingProps || {}) as Record<
         string,
         unknown
       >;
-      for (const key of [
-        "src",
-        "url",
-        "source",
-        "file",
-        "signedUrl",
-        "displaySource",
-        "originalSource",
-      ]) {
+      for (const key of MEDIA_KEYS) {
         const v = props[key];
         if (typeof v === "string") add(v);
         if (v && typeof v === "object") {
@@ -440,6 +463,7 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
           if (typeof o.url === "string") add(o.url);
           if (typeof o.src === "string") add(o.src);
           if (typeof o.signedUrl === "string") add(o.signedUrl);
+          if (typeof o.signed_url === "string") add(o.signed_url);
         }
       }
       // Notion file blocks often nest under props.blockValue.format
@@ -453,9 +477,25 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
           "source",
           "file_ids",
           "page_cover",
+          "page_icon",
+          "bookmark_cover",
+          "bookmark_icon",
         ]) {
           const v = format[key];
           if (typeof v === "string") add(v);
+        }
+      }
+      // Deep-scan string values that look like media URLs
+      for (const v of Object.values(props)) {
+        if (
+          typeof v === "string" &&
+          (/\/(image|file)\//i.test(v) ||
+            /file\.notion\.so|notionusercontent|amazonaws\.com|secure\.notion-static/i.test(
+              v,
+            ) ||
+            /\.(png|jpe?g|webp|gif|mp3|m4a|wav|ogg|pdf)(\?|$)/i.test(v))
+        ) {
+          add(v);
         }
       }
       walkFiber(n.child, depth + 1);
@@ -471,6 +511,32 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       return key ? (el as unknown as Record<string, unknown>)[key] : null;
     };
 
+    const harvestDomMedia = () => {
+      for (const el of Array.from(
+        document.querySelectorAll(
+          "img[src], source[src], video[src], audio[src], img[data-src], img[data-lazy-src], img[data-original]",
+        ),
+      )) {
+        add(el.getAttribute("src"));
+        add(el.getAttribute("data-src"));
+        add(el.getAttribute("data-lazy-src"));
+        add(el.getAttribute("data-original"));
+      }
+      for (const el of Array.from(document.querySelectorAll("[srcset]"))) {
+        for (const part of (el.getAttribute("srcset") || "").split(",")) {
+          add(part.trim().split(/\s+/)[0]);
+        }
+      }
+      for (const el of Array.from(
+        document.querySelectorAll("[style*='url(']"),
+      )) {
+        const style = el.getAttribute("style") || "";
+        for (const m of style.matchAll(/url\((['"]?)([^)'"]+)\1\)/g)) {
+          add(m[2]);
+        }
+      }
+    };
+
     // Toggles should already be expanded via expandAllToggles(); keep a light
     // in-page pass for any that CDP missed.
     for (const block of Array.from(
@@ -483,117 +549,182 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
     }
     await delay(400);
 
-    const mediaBlocks = Array.from(
-      document.querySelectorAll(
-        ".notion-image-block, .notion-audio-block, .notion-video-block, .notion-file-block, .notion-bookmark-block",
-      ),
-    ) as HTMLElement[];
+    const processedBlocks = new Set<string>();
 
-    for (const block of mediaBlocks) {
-      try {
-        block.scrollIntoView({ block: "center", inline: "nearest" });
-      } catch {
-        /* ignore */
-      }
-      await delay(60);
+    const processMediaBlocks = async (onlyNew = false) => {
+      const mediaBlocks = Array.from(
+        document.querySelectorAll(
+          ".notion-image-block, .notion-audio-block, .notion-video-block, .notion-file-block, .notion-bookmark-block, .notion-callout-block",
+        ),
+      ) as HTMLElement[];
 
-      // Click to force Notion player / image mount (never follow bookmark links)
-      const alreadyMounted = Boolean(
-        block.querySelector("img[src]:not([src^='data:']), audio[src], video[src]"),
-      );
-      if (!block.classList.contains("notion-bookmark-block") && !alreadyMounted) {
-        const hit =
-          block.querySelector("[role='button']") ||
-          block.querySelector("[role='figure']") ||
-          block;
+      for (const block of mediaBlocks) {
+        const bid =
+          block.getAttribute("data-block-id") ||
+          `anon:${mediaBlocks.indexOf(block)}`;
+        if (onlyNew && processedBlocks.has(bid)) continue;
+        processedBlocks.add(bid);
+
         try {
-          (hit as HTMLElement).click();
+          block.scrollIntoView({ block: "center", inline: "nearest" });
         } catch {
           /* ignore */
         }
-        await delay(120);
-      } else {
         await delay(40);
-      }
 
-      // Pull URLs from React fiber
-      walkFiber(fiberOf(block));
+        // Click to force Notion player / image mount (never follow bookmark links)
+        const alreadyMounted = Boolean(
+          block.querySelector(
+            "img[src]:not([src^='data:']), audio[src], video[src]",
+          ),
+        );
+        if (
+          !block.classList.contains("notion-bookmark-block") &&
+          !alreadyMounted
+        ) {
+          const hit =
+            block.querySelector("[role='button']") ||
+            block.querySelector("[role='figure']") ||
+            block;
+          try {
+            (hit as HTMLElement).click();
+          } catch {
+            /* ignore */
+          }
+          await delay(80);
+        }
 
-      // Bookmark covers often stay as 1×1 gif until a real URL is applied
-      if (block.classList.contains("notion-bookmark-block")) {
-        const coverFound = new Set<string>();
-        const addCover = (u: string | null | undefined) => {
-          const a = abs(u);
-          if (a && /^https?:/i.test(a)) {
-            coverFound.add(a);
-            found.add(a);
-          }
-        };
-        const coverKeys = [
-          "bookmark_cover",
-          "bookmarkCover",
-          "cover",
-          "coverUrl",
-          "preview_image",
-          "previewImage",
-          "display_source",
-          "source",
-        ];
-        const dig = (node: unknown, depth = 0): void => {
-          if (!node || depth > 14) return;
-          const n = node as Record<string, unknown>;
-          const props = (n.memoizedProps || n.pendingProps || {}) as Record<
-            string,
-            unknown
-          >;
-          for (const key of coverKeys) {
-            const v = props[key];
-            if (typeof v === "string") addCover(v);
-          }
-          const bv = props.blockValue as Record<string, unknown> | undefined;
-          const format = (bv?.format || props.format) as
-            | Record<string, unknown>
-            | undefined;
-          if (format) {
+        walkFiber(fiberOf(block));
+
+        // Bookmark covers often stay as 1×1 gif until a real URL is applied
+        if (block.classList.contains("notion-bookmark-block")) {
+          const coverFound = new Set<string>();
+          const addCover = (u: string | null | undefined) => {
+            const a = abs(u);
+            if (a && /^https?:/i.test(a)) {
+              coverFound.add(a);
+              found.add(a);
+            }
+          };
+          const coverKeys = [
+            "bookmark_cover",
+            "bookmarkCover",
+            "cover",
+            "coverUrl",
+            "preview_image",
+            "previewImage",
+            "display_source",
+            "source",
+          ];
+          const dig = (node: unknown, depth = 0): void => {
+            if (!node || depth > 14) return;
+            const n = node as Record<string, unknown>;
+            const props = (n.memoizedProps || n.pendingProps || {}) as Record<
+              string,
+              unknown
+            >;
             for (const key of coverKeys) {
-              const v = format[key];
+              const v = props[key];
               if (typeof v === "string") addCover(v);
             }
-          }
-          dig(n.child, depth + 1);
-          dig(n.sibling, depth + 1);
-        };
-        dig(fiberOf(block));
+            const bv = props.blockValue as Record<string, unknown> | undefined;
+            const format = (bv?.format || props.format) as
+              | Record<string, unknown>
+              | undefined;
+            if (format) {
+              for (const key of coverKeys) {
+                const v = format[key];
+                if (typeof v === "string") addCover(v);
+              }
+            }
+            dig(n.child, depth + 1);
+            dig(n.sibling, depth + 1);
+          };
+          dig(fiberOf(block));
 
-        const img = block.querySelector("img") as HTMLImageElement | null;
-        if (img) {
-          const src = img.getAttribute("src") || "";
-          if (!src || /^data:image\/(gif|svg)/i.test(src)) {
-            const covers = [...coverFound].filter(
-              (u) =>
-                /\.(png|jpe?g|webp|gif)(\?|$)/i.test(u) ||
-                /\/image\//i.test(u) ||
-                /screens\.cdn\.|wordwall|unsplash|og-image|notionusercontent/i.test(
-                  u,
-                ),
-            );
-            const pick = covers[0] || [...coverFound][0];
-            if (pick) {
-              img.setAttribute("src", pick);
-              img.removeAttribute("srcset");
+          const img = block.querySelector("img") as HTMLImageElement | null;
+          if (img) {
+            const src = img.getAttribute("src") || "";
+            if (!src || /^data:image\/(gif|svg)/i.test(src)) {
+              const covers = [...coverFound].filter(
+                (u) =>
+                  /\.(png|jpe?g|webp|gif)(\?|$)/i.test(u) ||
+                  /\/image\//i.test(u) ||
+                  /screens\.cdn\.|wordwall|unsplash|og-image|notionusercontent/i.test(
+                    u,
+                  ),
+              );
+              const pick = covers[0] || [...coverFound][0];
+              if (pick) {
+                img.setAttribute("src", pick);
+                img.removeAttribute("srcset");
+              }
             }
           }
         }
-      }
 
-      // Collect whatever Notion mounted
-      for (const el of Array.from(
-        block.querySelectorAll("img[src], audio[src], source[src], video[src], a[href]"),
-      )) {
-        add(el.getAttribute("src"));
-        add(el.getAttribute("href"));
+        for (const el of Array.from(
+          block.querySelectorAll(
+            "img[src], audio[src], source[src], video[src], a[href]",
+          ),
+        )) {
+          add(el.getAttribute("src"));
+          add(el.getAttribute("href"));
+        }
+      }
+      return mediaBlocks;
+    };
+
+    let mediaBlocks = await processMediaBlocks(false);
+    harvestDomMedia();
+
+    // Scroll Notion scrollers so virtualized / below-fold media mounts
+    for (const scroller of Array.from(
+      document.querySelectorAll(".notion-scroller"),
+    ) as HTMLElement[]) {
+      const maxX = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      const maxY = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const stepX = Math.max(160, Math.floor(scroller.clientWidth * 0.7) || 160);
+      const stepY = Math.max(160, Math.floor(scroller.clientHeight * 0.7) || 160);
+      if (maxX > 0) {
+        for (let x = 0; x <= maxX + stepX; x += stepX) {
+          scroller.scrollLeft = Math.min(x, maxX);
+          await delay(55);
+          harvestDomMedia();
+          mediaBlocks = await processMediaBlocks(true);
+        }
+        scroller.scrollLeft = 0;
+      }
+      if (maxY > 0) {
+        for (let y = 0; y <= maxY + stepY; y += stepY) {
+          scroller.scrollTop = Math.min(y, maxY);
+          await delay(55);
+          harvestDomMedia();
+          mediaBlocks = await processMediaBlocks(true);
+        }
+        scroller.scrollTop = 0;
       }
     }
+
+    const pageHeight = () =>
+      Math.max(
+        document.body?.scrollHeight || 0,
+        document.documentElement?.scrollHeight || 0,
+      );
+    let prevH = 0;
+    for (let i = 0; i < 24; i++) {
+      const h = pageHeight();
+      if (h <= prevH) break;
+      prevH = h;
+      window.scrollTo(0, h);
+      await delay(70);
+      harvestDomMedia();
+      mediaBlocks = await processMediaBlocks(true);
+    }
+    window.scrollTo(0, 0);
+    await delay(100);
+    mediaBlocks = await processMediaBlocks(true);
+    harvestDomMedia();
 
     // Performance resource entries catch lazy loads we missed in DOM attrs
     try {
@@ -601,8 +732,10 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
         const u = (e as PerformanceResourceTiming).name;
         if (
           /\/(image|file)\//i.test(u) ||
-          /file\.notion\.so/i.test(u) ||
-          /\.(mp3|m4a|png|jpe?g|webp|gif)(\?|$)/i.test(u)
+          /file\.notion\.so|notionusercontent|amazonaws\.com|secure\.notion-static/i.test(
+            u,
+          ) ||
+          /\.(mp3|m4a|png|jpe?g|webp|gif|pdf)(\?|$)/i.test(u)
         ) {
           add(u);
         }
@@ -613,13 +746,15 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
 
     // Inject <img>/<audio> into still-empty figures using discovered URLs keyed by block id
     const byBlock = new Map<string, string[]>();
+    const normId = (raw: string) => raw.replace(/-/g, "").toLowerCase();
     for (const u of found) {
       try {
         const id = new URL(u).searchParams.get("id");
         if (!id) continue;
-        const list = byBlock.get(id) || [];
+        const key = normId(id);
+        const list = byBlock.get(key) || [];
         list.push(u);
-        byBlock.set(id, list);
+        byBlock.set(key, list);
       } catch {
         /* ignore */
       }
@@ -629,7 +764,9 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       const filtered = urls.filter((u) =>
         kind === "audio"
           ? /\.(mp3|m4a|ogg|wav)(\?|$)/i.test(u) || /file\.notion\.so/i.test(u)
-          : /\/image\//i.test(u) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(u),
+          : /\/image\//i.test(u) ||
+            /\.(png|jpe?g|webp|gif)(\?|$)/i.test(u) ||
+            /notionusercontent|amazonaws\.com|secure\.notion-static/i.test(u),
       );
       if (!filtered.length) return null;
       // Prefer largest width=
@@ -642,7 +779,7 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
     };
 
     for (const block of mediaBlocks) {
-      const id = block.getAttribute("data-block-id") || "";
+      const id = normId(block.getAttribute("data-block-id") || "");
       const urls = byBlock.get(id) || [];
       const figure =
         block.querySelector('[role="figure"]') ||
@@ -690,7 +827,9 @@ export async function hydrateNotionMedia(page: Page): Promise<string[]> {
       }
     }
 
-    await delay(400);
+    // Give browsers a moment to start fetching promoted lazy srcs
+    await delay(500);
+    harvestDomMedia();
     return [...found];
   });
 }

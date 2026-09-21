@@ -381,9 +381,12 @@ export async function collectDomAssetUrls(page: Page): Promise<string[]> {
     };
 
     for (const el of document.querySelectorAll(
-      "img[src], source[src], video[src], audio[src], link[href], use[href]",
+      "img[src], img[data-src], img[data-lazy-src], img[data-original], source[src], video[src], audio[src], link[href], use[href]",
     )) {
       add(el.getAttribute("src"));
+      add(el.getAttribute("data-src"));
+      add(el.getAttribute("data-lazy-src"));
+      add(el.getAttribute("data-original"));
       if (el.tagName === "LINK" || el.tagName === "USE" || el.hasAttribute("href")) {
         add(el.getAttribute("href"));
       }
@@ -738,6 +741,15 @@ export function buildBlockAssetIndex(
       const u = new URL(remote.replace(/&amp;/g, "&"));
       blockId = normalizeBlockId(u.searchParams.get("id"));
       width = Number(u.searchParams.get("width") || 0) || 0;
+      // Some Notion CDN URLs put the block id only in the path fragment
+      if (!blockId) {
+        const pathId = u.pathname.match(
+          /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+        );
+        if (pathId && /\/(image|file)\//i.test(u.pathname)) {
+          blockId = normalizeBlockId(pathId[0]);
+        }
+      }
     } catch {
       continue;
     }
